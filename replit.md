@@ -64,6 +64,15 @@ The project follows an 8-tier modular architecture:
 - CLI flags: --use-ensemble, --ensemble-plms esm2,prott5,ankh, --fusion-strategy concat
 - Full data alignment across embeddings, labels, and homology features
 
+✅ **Phase 5 Complete** - Advanced Optimization & CAFA Compliance
+- HierarchicalBCELoss: penalizes GO ontology violations (child > parent consistency)
+- TopKFilter: enforces ≤1500 terms per protein (CAFA-6 requirement)
+- Per-ontology threshold optimization via grid search over configurable ranges
+- OptimizationConfig: centralized settings for advanced tuning strategies
+- CLI flags: --use-hierarchical-loss, --hierarchical-weight, --no-topk-filter, --max-terms
+- Backward compatible: all Phase 5 features disabled by default
+- Verified: hierarchical loss + top-K filtering + threshold optimization all working correctly
+
 ## Recent Changes (2025-10-29)
 **Phase 1 (Baseline):**
 - Created complete project structure with 5 core modules
@@ -100,17 +109,25 @@ The project follows an 8-tier modular architecture:
 - Verified data alignment across embeddings, labels, and homology features
 - Analyzed competitor approaches: label propagation, threshold optimization, top-K filtering common in winning solutions
 
-## Next Steps (Phase 5+)
-- Hierarchical loss regularization (penalize ontology violations during training)
+**Phase 5 (Advanced Optimization & CAFA Compliance):**
+- Implemented HierarchicalBCELoss in models/hierarchical_loss.py combining BCE + consistency penalties
+- Implemented TopKFilter in evaluation/postprocessing.py for CAFA-6 term limit compliance
+- Added OptimizationConfig to config/base.py for centralized Phase 5 settings
+- Integrated hierarchical loss into Trainer with backward-compatible API
+- Integrated top-K filtering into evaluation pipeline after threshold optimization
+- Added CLI flags: --use-hierarchical-loss, --hierarchical-weight, --no-topk-filter, --max-terms
+- Tested complete Phase 5 pipeline: hierarchical loss (weight=0.1) + top-K filtering working
+- Architect approved: production-ready implementation with minor refinement suggestions
+
+## Next Steps (Phase 6+)
 - Species-aware cross-validation (stratified by taxonomy)
 - Advanced homology transfer (weighted voting, GO term propagation)
-- Threshold optimization (grid search per ontology)
-- Top-K filtering (≤1500 terms per protein as per CAFA rules)
 - Label propagation optimization (tune ancestor closure parameters)
 - Calibration and uncertainty quantification
 - Production deployment configuration
 - Validation on realistic CAFA dataset split
 - Regression tests for caching behavior
+- Fine-tuning Phase 5: expose hierarchical loss components, tighten top-K filtering for score ties, wire advanced threshold strategies
 
 ## How to Use
 **Demo mode** (no data required):
@@ -146,6 +163,16 @@ python cafa6_predictor/main.py --demo --use-ensemble --ensemble-plms esm2,prott5
 **Custom fusion strategy** (attention-based):
 ```bash
 python cafa6_predictor/main.py --demo --use-ensemble --fusion-strategy attention
+```
+
+**Phase 5 features** (hierarchical loss + top-K filtering):
+```bash
+python cafa6_predictor/main.py --demo --use-ensemble --ensemble-plms esm2,prott5,ankh --use-hierarchical-loss --hierarchical-weight 0.1
+```
+
+**Disable top-K filtering** (allow unlimited terms):
+```bash
+python cafa6_predictor/main.py --demo --no-topk-filter
 ```
 
 **With real CAFA-6 data**:
