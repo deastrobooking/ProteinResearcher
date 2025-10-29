@@ -80,11 +80,13 @@ class SubmissionWriter:
         
         df = pd.DataFrame(filtered_rows, columns=['protein_id', 'go_term', 'confidence'])
         
+        # Write as TSV (tab-separated) for CAFA-6 compliance
         df.to_csv(output_path, sep='\t', header=False, index=False)
         
         print(f"✓ Wrote submission to {output_path}")
+        print(f"  Format: TSV (tab-separated)")
         print(f"  Total predictions: {len(df):,}")
         print(f"  Unique proteins: {df['protein_id'].nunique():,}")
         print(f"  Predictions per protein: {len(df) / df['protein_id'].nunique():.1f} (avg)")
         
-        return df
+        return dfn df

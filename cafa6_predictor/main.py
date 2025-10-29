@@ -563,8 +563,8 @@ def main(args):
     # Generate predictions
     test_predictions = trainer.predict(test_loader)
     
-    # Write submission file
-    submission_path = Path("submission.csv")
+    # Write submission file (TSV format for CAFA-6)
+    submission_path = Path("submission.tsv")
     thresholds = {onto: results[onto]['best_threshold'] for onto in ['MFO', 'BPO', 'CCO']}
     
     SubmissionWriter.write_submission(
