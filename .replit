@@ -45,15 +45,6 @@ args = "python cafa6_predictor/main.py --demo --use-ensemble --ensemble-plms esm
 outputType = "console"
 
 [[workflows.workflow]]
-name = "CAFA-6 Test Data Run"
-author = 8097281
-mode = "sequential"
-
-[[workflows.workflow.tasks]]
-task = "shell.exec"
-args = "python cafa6_predictor/main.py --use-testdata --no-homology"
-
-[[workflows.workflow]]
 name = "CAFA-6 Full Pipeline (Test Data)"
 author = 8097281
 mode = "sequential"
@@ -109,4 +100,4 @@ mode = "sequential"
 
 [[workflows.workflow.tasks]]
 task = "shell.exec"
-args = "python cafa6_predictor/main.py --use-ensemble --ensemble-plms esm2,prott5,ankh --use-hierarchical-loss --hierarchical-weight 0.1"
+args = "python cafa6_predictor/main.py --no-homology --use-ensemble --ensemble-plms esm2,prott5,ankh --use-hierarchical-loss --hierarchical-weight 0.1"
