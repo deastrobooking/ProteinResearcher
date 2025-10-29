@@ -4,20 +4,23 @@
 This is a modular, CAFA-6 compliant implementation for protein function prediction. The system implements a baseline hybrid predictor combining protein language model embeddings with multi-ontology classification, IC-weighted evaluation, and ancestor closure.
 
 ## Architecture
-The project follows a 6-tier modular architecture:
+The project follows a 7-tier modular architecture:
 1. **Data Ingestion** (`data_ingest/`) - GO graph loading, label building, IA weights
 2. **Homology** (`homology/`) - DIAMOND sequence alignment and homology features
-3. **Models** (`models/`) - Multi-ontology neural network with separate MFO/BPO/CCO heads
-4. **Evaluation** (`evaluation/`) - IC-weighted maxF1 metrics and ancestor closure
-5. **Configuration** (`config/`) - Centralized configuration management
-6. **Orchestration** (`main.py`) - End-to-end training pipeline
+3. **Zero-Shot** (`zero_shot/`) - GO term encoding with sentence transformers
+4. **Models** (`models/`) - Hybrid multi-ontology architecture with linear + zero-shot heads
+5. **Evaluation** (`evaluation/`) - IC-weighted maxF1 metrics and ancestor closure
+6. **Configuration** (`config/`) - Centralized configuration management
+7. **Orchestration** (`main.py`) - End-to-end training pipeline
 
 ## Key Design Decisions
 - **Ontology-specific heads**: Separate classifiers for MFO/BPO/CCO to handle different term distributions
 - **BCEWithLogitsLoss**: Proper multilabel loss with positive class weighting for imbalance
 - **Ancestor closure**: Applied after scoring, before thresholding (critical for CAFA metrics)
 - **Homology integration**: DIAMOND BLASTP + feature concatenation (1280 pLM + 128 homology = 1408-dim)
-- **Caching**: Aggressive caching of GO graph, labels, embeddings, DIAMOND database, and alignments
+- **Zero-shot learning**: Bilinear matching between protein embeddings and GO term text embeddings (384-dim)
+- **Hybrid architecture**: Combines linear heads + zero-shot heads with alpha=0.5 weighting for best of both worlds
+- **Caching**: Aggressive caching of GO graph, labels, embeddings, DIAMOND database, alignments, and term embeddings
 - **CAFA-6 compliance**: Strict adherence to submission format (≤1500 terms, ≤3 sig figs, tab-separated)
 
 ## Current State
@@ -39,6 +42,16 @@ The project follows a 6-tier modular architecture:
 - CLI flags: --no-homology, --rebuild-diamond
 - Full caching support for DIAMOND database and alignments
 
+✅ **Phase 3 Complete** - Zero-Shot GO Term Encoding
+- Sentence transformer integration (all-MiniLM-L6-v2) for GO term text embeddings
+- GOTermEncoder: extracts GO descriptions from go-basic.obo and generates 384-dim embeddings
+- ZeroShotHead: bilinear matching layer for protein-term similarity scoring
+- HybridMultiOntoModel: combines linear heads + zero-shot heads with learnable weighting
+- Three prediction modes: pure linear, pure zero-shot, hybrid (alpha=0.5)
+- Term embedding caching for fast reloading
+- CLI flags: --use-zero-shot, --use-hybrid
+- Model scales to 5.5M parameters in hybrid mode
+
 ## Recent Changes (2025-10-29)
 **Phase 1 (Baseline):**
 - Created complete project structure with 5 core modules
@@ -55,13 +68,25 @@ The project follows a 6-tier modular architecture:
 - Added configuration options and CLI flags for homology control
 - Extended caching to DIAMOND database and alignment results
 
-## Next Steps (Phase 3+)
-- Zero-shot GO term encoding for rare labels (e.g., ProteinBERT GO embeddings)
+**Phase 3 (Zero-Shot GO Term Encoding):**
+- Installed transformers, sentencepiece, and sentence-transformers
+- Implemented GOTermEncoder for text-based GO term embeddings (384-dim)
+- Implemented ZeroShotHead with bilinear matching (also supports MLP, cosine)
+- Created HybridMultiOntoModel combining linear + zero-shot heads
+- Added ZeroShotConfig to centralized configuration
+- Integrated zero-shot into main pipeline with conditional encoding
+- Tested hybrid mode successfully: 5.5M parameters, IC-weighted maxF1 = 1.0000
+- Fixed huggingface-hub version conflict (<1.0 required)
+
+## Next Steps (Phase 4+)
 - Multi-pLM ensemble (ESM-2 + ProtT5 + Ankh)
 - Hierarchical loss regularization (penalize ontology violations)
 - Species-aware cross-validation
 - Advanced homology transfer (weighted voting, propagation)
+- Calibration and uncertainty quantification
 - Production deployment configuration
+- Validation on realistic CAFA dataset split
+- Regression tests for caching behavior
 
 ## How to Use
 **Demo mode** (no data required):
@@ -77,6 +102,16 @@ python cafa6_predictor/main.py --demo --no-homology
 **Force rebuild DIAMOND database**:
 ```bash
 python cafa6_predictor/main.py --demo --rebuild-diamond
+```
+
+**Hybrid mode** (linear + zero-shot):
+```bash
+python cafa6_predictor/main.py --demo --use-hybrid
+```
+
+**Pure zero-shot mode** (no linear heads):
+```bash
+python cafa6_predictor/main.py --demo --use-zero-shot
 ```
 
 **With real CAFA-6 data**:
@@ -103,6 +138,8 @@ Required data files:
 - biopython - Sequence I/O
 - scikit-learn - Utilities
 - tqdm - Progress bars
+- transformers, sentencepiece - Zero-shot text encoding
+- huggingface-hub (<1.0) - Model downloading
 
 **System packages:**
 - DIAMOND v2.1.11 - Sequence alignment
