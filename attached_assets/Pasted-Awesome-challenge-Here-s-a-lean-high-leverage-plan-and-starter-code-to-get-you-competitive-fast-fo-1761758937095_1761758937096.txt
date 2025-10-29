@@ -1,0 +1,208 @@
+Awesome challenge. Here’s a lean, high-leverage plan and starter code to get you competitive fast for CAFA-6.
+
+# Game plan (what works in CAFA)
+
+1. **Hybrid predictor = Homology + pLM (protein LM) + GO-aware zero-shot.**
+
+* **Homology transfer** with DIAMOND/BLAST to nearest annotated sequences; calibrate scores and **blend** with ML outputs. Homology is still a very strong baseline and anchors long tails. ([Nature][1])
+* **Protein LMs** (ESM-2 or ProtT5) for sequence embeddings → multi-label classifier per sub-ontology (MF/BP/CC). These capture remote homology and motifs. ([Science][2])
+* **GO-axiom/graph regularization** (DeepGOZero-style): use GO’s DAG/axioms to (a) enforce ancestor closure at inference and (b) add a small zero-shot head for rarely seen terms. ([OUP Academic][3])
+
+2. **Train & validate with CAFA metrics in mind.**
+   Use **information-accretion weighted precision/recall**; tune thresholds **per sub-ontology** to maximize **maxF1(ic)** on a held-out set. Compute ancestor-propagated predictions before scoring. ([BioMed Central][4])
+
+3. **Leakage & distribution shift.**
+
+* Exclude near-clones of the leaderboard proteins from training; don’t overfit to that sample (organizers warn it’s small & out-of-domain). ([Kaggle][5])
+* Species- and length-aware CV (stratify by taxon/length buckets) to stabilize thresholds.
+
+4. **Ensembling.**
+   Late-blend: Homology (H), pLM classifier (M), zero-shot (Z). Calibrate each (Platt/isotonic) on validation ic-F1, then stack:
+   `p_final = wH·pH + wM·pM + wZ·pZ`, weights tuned per MF/BP/CC.
+
+---
+
+## Data & ontology prep (one-time)
+
+* Parse training FASTA + experimental GO annotations (the competition provides them).
+* Load **GO graph** (obo/json), build ancestor lists; precompute **ia(f)** weights from organizers’ file. ([OUP Academic][6])
+* Map terms to indices **per sub-ontology** (MF/BP/CC).
+
+---
+
+## Baseline model (ESM-2 + linear head)
+
+Below is a compact PyTorch starter you can run on a single GPU. It:
+
+* Creates ESM-2 embeddings (mean-pooled),
+* Trains a **BCEWithLogits** classifier,
+* Applies **ancestor closure** and **per-ontology thresholding**,
+* Emits the **tab-separated submission** (≤1500 terms/target, scores in (0,1], ≤3 sig figs) per rules. ([Kaggle][7])
+
+```python
+# pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu121
+# pip install transformers==4.44.2 biopython networkx
+
+import math, json, gzip, random, numpy as np, torch, torch.nn as nn
+from transformers import AutoTokenizer, AutoModel
+from Bio import SeqIO
+import networkx as nx
+
+DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
+
+### --- Load GO and build DAG/ancestors ---
+# go_edges: list of (child_term, parent_term) across is_a/part_of edges for each sub-ontology
+def load_go_graph(go_json_path):
+    G = nx.DiGraph()
+    # ...load JSON OBOgraph; add edges child->parent...
+    return G
+
+def ancestors_closure(G, term_ids):
+    out = set(term_ids)
+    for t in list(term_ids):
+        out |= nx.ancestors(G, t)
+    return out
+
+### --- Protein LM (ESM-2) ---
+EMB_MODEL = "facebook/esm2_t33_650M_UR50D"  # good balance of quality/speed
+tok = AutoTokenizer.from_pretrained(EMB_MODEL, do_lower_case=False)
+esm = AutoModel.from_pretrained(EMB_MODEL).to(DEVICE).eval()
+
+@torch.no_grad()
+def embed_sequence(seq: str):
+    toks = tok(seq, return_tensors="pt", add_special_tokens=True, padding=False, truncation=True).to(DEVICE)
+    out = esm(**toks)
+    # last hidden state: [1, L, H] → mean pool (exclude special tokens if desired)
+    h = out.last_hidden_state[0]
+    return h.mean(dim=0).float().cpu().numpy()
+
+### --- Dataset (you'll adapt to organizers' files) ---
+def fasta_to_embeddings(fasta_path, cache_npz):
+    try:
+        data = np.load(cache_npz)
+        return {k: data[k] for k in data.files}
+    except:
+        embs = {}
+        for rec in SeqIO.parse(fasta_path, "fasta"):
+            embs[rec.id] = embed_sequence(str(rec.seq))
+        np.savez_compressed(cache_npz, **embs)
+        return embs
+
+### --- Multi-label head per sub-ontology ---
+class Head(nn.Module):
+    def __init__(self, in_dim, n_labels):
+        super().__init__()
+        self.net = nn.Sequential(
+            nn.Linear(in_dim, 2048), nn.ReLU(),
+            nn.Dropout(0.2),
+            nn.Linear(2048, n_labels)
+        )
+    def forward(self, x): return self.net(x)
+
+def train_head(X, Y, class_pos_weight=None, epochs=6, lr=1e-3):
+    model = Head(X.shape[1], Y.shape[1]).to(DEVICE)
+    opt = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=1e-4)
+    pos_w = torch.tensor(class_pos_weight).to(DEVICE) if class_pos_weight is not None else None
+    loss_fn = nn.BCEWithLogitsLoss(pos_weight=pos_w)
+    X_t = torch.tensor(X, dtype=torch.float32).to(DEVICE)
+    Y_t = torch.tensor(Y, dtype=torch.float32).to(DEVICE)
+    for ep in range(epochs):
+        model.train(); opt.zero_grad()
+        logits = model(X_t)
+        loss = loss_fn(logits, Y_t)
+        loss.backward(); opt.step()
+    return model
+
+@torch.no_grad()
+def predict_scores(model, X):
+    model.eval()
+    logits = model(torch.tensor(X, dtype=torch.float32).to(DEVICE))
+    return torch.sigmoid(logits).cpu().numpy()
+
+### --- Weighted maxF1 (ic/ia-weighted); threshold search ---
+def maxF1_weighted(scores, Y_true, ia_weights, ancestors, term_list):
+    # scores: N x C, Y_true: N x C (0/1); ancestors: dict[term_idx] -> set(idx of ancestors)
+    # propagate predictions: parent score = max(child scores)
+    S = scores.copy()
+    for j, parents in ancestors.items():
+        if parents:
+            parent_score = S[:, list(parents)].max(axis=1)
+            S[:, j] = np.maximum(S[:, j], parent_score)
+    best_F, best_t = 0.0, 0.5
+    ia = np.array([ia_weights[term_list[j]] for j in range(len(term_list))])
+    for t in np.linspace(0.05, 0.95, 19):
+        P = (S >= t).astype(int)
+        # weighted precision/recall
+        tp = (P & Y_true) * ia
+        fp = (P & (1 - Y_true)) * ia
+        fn = ((1 - P) & Y_true) * ia
+        wP = tp.sum() / (tp.sum() + fp.sum() + 1e-12)
+        wR = tp.sum() / (tp.sum() + fn.sum() + 1e-12)
+        F = 2*wP*wR/(wP+wR+1e-12)
+        if F > best_F: best_F, best_t = F, t
+    return best_F, best_t
+```
+
+> Swap in ProtT5 (`Rostlab/prot_t5_xl_uniref50`) to ensemble with ESM-2.
+
+---
+
+## Homology track (blend input)
+
+* Run **DIAMOND blastp** against your training set with experimental terms. For each test sequence, turn top-k hits into term probabilities (e.g., identity·bit score normalization, decay by rank).
+* **Propagate** hit terms to ancestors before blending.
+
+---
+
+## Zero-shot/GO-aware head
+
+* Build a **term-text encoder**: encode GO term names + definitions (e.g., average token embeddings from your pLM’s vocabulary or a small text encoder).
+* Score a protein embedding vs term embeddings (cosine). Use tiny weights for rarely seen terms; this stabilizes predictions for sparse labels (DeepGOZero idea). ([OUP Academic][3])
+
+---
+
+## Inference & submission writer
+
+* Run: pLM head → scores; Homology → scores; Zero-shot → scores.
+* Calibrate & **blend per ontology**; **ancestor-close**; apply per-ontology threshold.
+* Emit `protein_id \t GO:XXXXXXX \t score` with ≤3 sig figs; **cap at 1500 terms per protein (MF+BP+CC combined)**; never output score 0 (omit instead). ([Kaggle][7])
+
+---
+
+## Validation that matches CAFA scoring
+
+Re-implement the **information-accretion weighted maxF1** locally (as in Jiang 2016 / Clark & Radivojac 2013). Use the organizers’ `ia(f)` file. Always **propagate to ancestors** before scoring. Report **MF/BP/CC maxF1** and their mean. ([BioMed Central][4])
+
+---
+
+## Practical tips
+
+* **Imbalance:** compute `pos_weight = (N−pos)/pos` per term for BCE.
+* **Length buckets:** train or fine-tune thresholds across short/medium/long sequences.
+* **Taxon features:** add one-hot super-kingdom (Bacteria/Archaea/Eukarya/Virus) if available.
+* **Regularization:** small **hierarchical loss** term that penalizes child>parent logits before closure.
+* **Speed:** cache embeddings; DIAMOND for homology; mixed precision for pLM forward passes.
+
+---
+
+## References & context
+
+* **CAFA-6 rules/data** (timeline, submission format, leaderboard caveats). ([Kaggle][7])
+* **Metric**: information-accretion weighted maxF1. ([BioMed Central][4])
+* **GO background**. ([OUP Academic][6])
+* **Protein LMs**: ESM-2 / ESMFold; ProtT5. ([Science][2])
+* **Zero-shot with GO axioms**. ([OUP Academic][3])
+* **Homology search**: DIAMOND & sensitivity tradeoffs. ([PubMed][8])
+
+---
+
+If you want, I can spin this into a **cookie-cutter repo** (trainer, evaluator that reproduces the weighted maxF1, DIAMOND wrapper, and a submission builder) and tailor it to your compute (single GPU vs multi-GPU).
+
+[1]: https://www.nature.com/articles/s41592-021-01101-x?utm_source=chatgpt.com "Sensitive protein alignments at tree-of-life scale using ..."
+[2]: https://www.science.org/doi/10.1126/science.ade2574?utm_source=chatgpt.com "Evolutionary-scale prediction of atomic-level protein ..."
+[3]: https://academic.oup.com/bioinformatics/article/38/Supplement_1/i238/6617515?utm_source=chatgpt.com "DeepGOZero: improving protein function prediction from ..."
+[4]: https://genomebiology.biomedcentral.com/articles/10.1186/s13059-016-1037-6?utm_source=chatgpt.com "An expanded evaluation of protein function prediction ..."
+[5]: https://www.kaggle.com/competitions/cafa-6-protein-function-prediction/data?utm_source=chatgpt.com "CAFA 6 Protein Function Prediction"
+[6]: https://academic.oup.com/nar/article/49/D1/D325/6027811?utm_source=chatgpt.com "Gene Ontology resource: enriching a GOld mine"
+[7]: https://www.kaggle.com/competitions/cafa-6-protein-function-prediction?utm_source=chatgpt.com "CAFA 6 Protein Function Prediction"
+[8]: https://pubmed.ncbi.nlm.nih.gov/25402007/?utm_source=chatgpt.com "Fast and sensitive protein alignment using DIAMOND"

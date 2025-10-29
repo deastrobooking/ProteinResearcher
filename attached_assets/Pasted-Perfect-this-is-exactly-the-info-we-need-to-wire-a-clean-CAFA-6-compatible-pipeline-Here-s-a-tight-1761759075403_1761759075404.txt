@@ -1,0 +1,306 @@
+Perfect—this is exactly the info we need to wire a clean, CAFA-6–compatible pipeline. Here’s a tight, step-by-step “dataset → tensors → scorer → submission” setup you can drop into your repo.
+
+# 1) Quick checklist
+
+* Parse **GO DAG** from `go-basic.obo` (2025-06-01).
+* Build per-ontology vocabularies (MF/BP/CC) and ancestor tables.
+* Index training proteins → multi-hot labels from `train_terms.tsv`.
+* Load **IA.tsv** (information accretion) as weights per GO term.
+* (Optional features) Use `train_taxonomy.tsv` for CV splits & taxon features.
+* Prepare **testsuperset.fasta** IDs (and taxon IDs in headers) for inference.
+* Implement **ancestor closure** and **ic-weighted maxF1** scorer.
+* Emit **tab-separated** submission with ≤1500 terms/protein and scores in (0, 1], ≤3 sig figs.
+
+---
+
+# 2) File schema (practical notes)
+
+* **go-basic.obo** — GO graph; we’ll load with `obonet` (simple) or `networkx`.
+* **train_sequences.fasta** — Swiss-Prot only; headers like `sp|P9WHI7|RECN_MYCT`.
+* **train_terms.tsv** — columns: `uniprot_id \t go_id \t ontology` where ontology ∈ {BPO, CCO, MFO}.
+* **train_taxonomy.tsv** — `uniprot_id \t taxon_id`.
+* **IA.tsv** — `go_id \t ia_value` (float; many near 0 at the roots).
+* **testsuperset.fasta** — headers include `uniprot_id` and `taxon_id`.
+* **sample_submission.tsv** — format reference.
+
+---
+
+# 3) Ontology + indices (Python)
+
+```python
+# pip install obonet networkx pandas biopython
+import obonet, networkx as nx, pandas as pd, numpy as np, re
+from pathlib import Path
+
+DATA = Path("data/")  # adjust as needed
+
+ROOTS = {'BPO': 'GO:0008150', 'CCO': 'GO:0005575', 'MFO': 'GO:0003674'}
+
+# --- Load GO and build a single DAG (child -> parent edges) ---
+def load_go_graph(obo_path: Path):
+    G = obonet.read_obo(str(obo_path))          # returns a MultiDiGraph of GO
+    # Normalize to DiGraph with child->parent across 'is_a' and 'part_of'
+    DG = nx.DiGraph()
+    for n, d in G.nodes(data=True):
+        if not n.startswith("GO:"): 
+            continue
+        DG.add_node(n, name=d.get('name'), namespace=d.get('namespace'))  # namespace: biological_process / cellular_component / molecular_function
+        parents = []
+        for rel in ('is_a', 'part_of'):
+            for edge in d.get(rel, []):
+                p = edge.split(' ! ')[0] if ' ! ' in edge else edge
+                if p.startswith("GO:"): parents.append(p)
+        for p in parents:
+            DG.add_edge(n, p)  # child -> parent
+    return DG
+
+GO = load_go_graph(DATA / "go-basic.obo")
+
+# --- Map GO IDs to subontologies (BPO/CCO/MFO) ---
+def go_to_subonto(go_id: str) -> str | None:
+    ns = GO.nodes[go_id].get('namespace', '')
+    if ns == 'biological_process': return 'BPO'
+    if ns == 'cellular_component': return 'CCO'
+    if ns == 'molecular_function': return 'MFO'
+    return None
+
+# --- Build per-ontology vocabularies (exclude roots if you want; we’ll handle closure at score time) ---
+def build_term_lists():
+    by_onto = {'BPO': [], 'CCO': [], 'MFO': []}
+    for n in GO.nodes:
+        o = go_to_subonto(n)
+        if o: by_onto[o].append(n)
+    # Fix order for reproducibility
+    for k in by_onto: by_onto[k] = sorted(set(by_onto[k]))
+    return by_onto
+
+TERMS = build_term_lists()  # dict[onto] -> [go_ids]
+
+# --- Ancestor tables (indices) for fast closure ---
+def ancestor_index(onto_terms):
+    idx = {t:i for i,t in enumerate(onto_terms)}
+    anc = {}
+    for j,t in enumerate(onto_terms):
+        # Get all ancestors (parents, grandparents...) within same ontology
+        a = {a for a in nx.ancestors(GO, t) if a in idx}
+        anc[j] = {idx[a] for a in a}
+    return idx, anc
+
+IDX = {}
+ANC = {}
+for onto in ('MFO','BPO','CCO'):
+    IDX[onto], ANC[onto] = ancestor_index(TERMS[onto])
+```
+
+---
+
+# 4) Labels & IA weights
+
+```python
+# train_terms.tsv: uniprot_id \t go_id \t ontology (BPO/CCO/MFO)
+terms_df = pd.read_csv(DATA / "train_terms.tsv", sep="\t", header=None, names=["pid","go","onto"])
+
+# Restrict labels to GO terms known in the loaded graph
+terms_df = terms_df[terms_df['go'].isin(GO.nodes)]
+# Optional: ensure onto consistency with GO namespace
+terms_df['onto'] = terms_df['go'].map(go_to_subonto)
+
+# Build protein index
+pids = sorted(terms_df['pid'].unique())
+PID_INDEX = {p:i for i,p in enumerate(pids)}
+
+# Multi-hot label matrices per ontology
+Y = {}
+for onto in ('MFO','BPO','CCO'):
+    n_p = len(pids)
+    n_c = len(TERMS[onto])
+    mat = np.zeros((n_p, n_c), dtype=np.uint8)
+    sub = terms_df[terms_df['onto']==onto]
+    idx = IDX[onto]
+    for pid, go in zip(sub['pid'], sub['go']):
+        if go in idx:
+            mat[PID_INDEX[pid], idx[go]] = 1
+    Y[onto] = mat
+
+# Optional: propagate ground-truth labels to ancestors for training/eval (full-eval mode often uses ancestor closure)
+def propagate_ancestors(mat, anc):
+    M = mat.copy().astype(np.uint8)
+    for j, parents in anc.items():
+        if parents:
+            parent_cols = np.array(list(parents))
+            # If a child is labeled, ensure parents are labeled
+            # parent = OR over children that imply it; here we push up using child column j
+            # More efficient: a reverse adjacency; simple pass:
+            pass
+    # Efficient vectorized closure:
+    # iterative closure until convergence
+    changed = True
+    while changed:
+        changed = False
+        for j, parents in anc.items():
+            if not parents: continue
+            before = M[:, list(parents)].copy()
+            M[:, list(parents)] |= M[:, [j]]
+            if not np.array_equal(before, M[:, list(parents)]):
+                changed = True
+    return M
+
+# Load IA weights
+ia_df = pd.read_csv(DATA / "IA.tsv", sep="\t", header=None, names=["go","ia"])
+IA = {row.go: float(row.ia) for row in ia_df.itertuples(index=False)}
+IA_BY_ONTO = {o: np.array([IA.get(t, 0.0) for t in TERMS[o]], dtype=np.float64) for o in ('MFO','BPO','CCO')}
+```
+
+> Notes
+> • Evidence codes already filtered as per competition spec (EXP/HTP/TAS/IC and friends).
+> • **Absence ≠ negative**. Treat unlabeled terms as *unknown* (standard for CAFA); you’ll still optimize thresholds against provided labels using the ic-weighted metric.
+
+---
+
+# 5) Train/validation splits (robust to shift)
+
+* Use **species-aware** CV: stratify by `train_taxonomy.tsv` (e.g., group K-fold by `taxon_id`) to avoid leakage from close homologs in both folds.
+* Supplemental heuristics: length buckets (e.g., <200, 200–600, >600 aa).
+
+```python
+tax_df = pd.read_csv(DATA / "train_taxonomy.tsv", sep="\t", header=None, names=["pid","taxid"])
+tax_df = tax_df[tax_df['pid'].isin(PID_INDEX)]
+taxids = tax_df.drop_duplicates('pid').set_index('pid').reindex(pids)['taxid'].fillna(-1).astype(int).values
+```
+
+---
+
+# 6) ic-weighted maxF1 (matches CAFA scoring style)
+
+```python
+def ancestor_close_scores(S: np.ndarray, anc: dict) -> np.ndarray:
+    # S: [N, C] probabilities; propagate child→parent via max
+    P = S.copy()
+    # One simple topological order approach: repeatedly raise parents to max(child,parent)
+    # Precompute parent lists for speed:
+    parents_of = {j:list(anc[j]) for j in anc}
+    changed = True
+    # loop count is small in practice due to shallow paths
+    while changed:
+        changed = False
+        for j, parents in parents_of.items():
+            if not parents: continue
+            parent_vals = P[:, parents]
+            new_vals = np.maximum(parent_vals, P[:, [j]])
+            if (new_vals > parent_vals).any():
+                P[:, parents] = np.maximum(parent_vals, new_vals)
+                changed = True
+    return P
+
+def maxF1_ic(S_raw, Y_true, ia_vec, anc, thresholds=np.linspace(0.01, 0.99, 99)):
+    S = ancestor_close_scores(S_raw, anc)
+    best = (0.0, 0.5)
+    ia = ia_vec
+    # Avoid divide-by-zero
+    eps = 1e-12
+    for t in thresholds:
+        P = (S >= t).astype(np.uint8)
+        tp = ((P & (Y_true==1)) * ia).sum()
+        fp = ((P & (Y_true==0)) * ia).sum()
+        fn = (((1-P) & (Y_true==1)) * ia).sum()
+        wP = tp / (tp + fp + eps)
+        wR = tp / (tp + fn + eps)
+        F = (2*wP*wR) / (wP + wR + eps)
+        if F > best[0]: best = (F, t)
+    return best  # (maxF1, threshold)
+```
+
+Use this on a validation fold **per subontology** to pick thresholds, then report the mean of the three maxF1s.
+
+---
+
+# 7) Reading sequences & test IDs
+
+```python
+from Bio import SeqIO
+
+def read_fasta_ids(fasta_path: Path):
+    ids, seqs = [], {}
+    for rec in SeqIO.parse(str(fasta_path), "fasta"):
+        # headers: e.g., "sp|P9WHI7|RECN_MYCT taxon:511145 ..." (format may vary; competition guarantees UniProt ID + taxon)
+        m = re.search(r'\|([A-Z0-9]+)\|', rec.id)  # UniProt accession
+        pid = m.group(1) if m else rec.id
+        ids.append(pid)
+        seqs[pid] = str(rec.seq)
+    return ids, seqs
+
+train_ids, train_seqs = read_fasta_ids(DATA/"train_sequences.fasta")
+test_ids, test_seqs   = read_fasta_ids(DATA/"testsuperset.fasta")
+```
+
+---
+
+# 8) Submission builder (format-safe)
+
+* Combine MF/BP/CC predictions in one file.
+* **Do not** output zeros; cap **≤1500 terms** total per protein; **≤3 significant figures**; propagate to parents is done by organizers if you haven’t already, but it’s best to output children plus let parent propagation happen (we still do closure for scoring/thresholding).
+
+```python
+def to_sig3(x: float) -> str:
+    # scores in (0,1], not 0; clamp tiny positives to 0.001
+    x = float(np.clip(x, 1e-6, 1.0))
+    return f"{x:.3g}"  # up to 3 significant figures
+
+def build_submission(per_onto_scores: dict[str, dict[str, list[tuple[str,float]]]],
+                     out_path: Path,
+                     max_terms_per_protein: int = 1500):
+    """
+    per_onto_scores[onto][pid] = [(go_id, prob), ...] already filtered by thresholds & sorted desc
+    """
+    with out_path.open("w", encoding="utf-8") as f:
+        for pid in test_ids:
+            rows = []
+            for onto in ('MFO','BPO','CCO'):
+                for go, p in per_onto_scores.get(onto, {}).get(pid, []):
+                    rows.append((go, p))
+            # sort global desc and clip
+            rows.sort(key=lambda x: x[1], reverse=True)
+            rows = rows[:max_terms_per_protein]
+            for go, p in rows:
+                f.write(f"{pid}\t{go}\t{to_sig3(p)}\n")
+```
+
+You’ll fill `per_onto_scores` from your model outputs (pLM head, homology head, zero-shot head) **after** calibration & thresholding.
+
+---
+
+# 9) Sanity checks before training
+
+* **Label coverage:** print distribution of positives per term; drop extremely rare terms only if needed (keep them for zero-shot).
+* **IA distribution:** confirm IA is ~0 for roots; long tail rises (you already saw the histogram—good).
+* **Ancestor consistency:** verify no child is positive while parent is negative after propagation.
+* **Taxon leakage:** ensure proteins from the same species or near-identical sequences don’t straddle train/val splits if you want strict generalization.
+
+---
+
+# 10) Where this plugs into modeling
+
+* Embedding: cache ESM-2 / ProtT5 embeddings keyed by `pid`.
+* Classifier heads: one per ontology (shapes = `[d_emb → |TERMS[onto]|]`).
+* Homology: for each test sequence, top-k DIAMOND hits → term probs; propagate to parents.
+* Zero-shot: encode GO names/definitions; cosine with protein embedding; small weight.
+* **Blend** per ontology, **ancestor close**, **threshold** picked via `maxF1_ic` above.
+* Write submission with the helper.
+
+---
+
+# 11) Common pitfalls (avoid leaderboard traps)
+
+* Don’t tune to the small leaderboard slice; keep strong CV and report MF/BP/CC scores separately.
+* Ensure **no scores of 0** in the file; omit instead.
+* Respect the **≤1500 terms** cap per protein across all ontologies.
+* Use the **exact GO release** (2025-06-01) for term IDs/graph consistency.
+
+---
+
+If you want, I can add minimal unit tests for:
+
+* DAG load & root IDs,
+* ancestor closure equivalence (topological vs iterative),
+* IA-weighted scorer against a toy graph,
+* submission formatting (sig figs, cap, no zeros).
