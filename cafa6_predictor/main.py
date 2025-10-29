@@ -10,10 +10,12 @@ import argparse
 from config.base import Config
 from data_ingest import GOGraphLoader, LabelBuilder, IAWeightLoader
 from models import build_model
+from models.hybrid_model import build_hybrid_model
 from models.dataset import CAFA6Dataset
 from models.trainer import Trainer
 from evaluation import AncestorClosure, evaluate_predictions, SubmissionWriter
 from homology import DiamondRunner, HomologyFeatureExtractor
+from zero_shot import GOTermEncoder
 
 
 def load_sequences(config: Config):
@@ -147,6 +149,15 @@ def main(args):
         config.model.embedding_dim = 1280
         print("⚠ Homology features disabled")
     
+    if args.use_zero_shot:
+        config.zero_shot.use_zero_shot = True
+        print("✓ Zero-shot GO term encoding enabled")
+    
+    if args.use_hybrid:
+        config.zero_shot.use_hybrid = True
+        config.zero_shot.use_zero_shot = False
+        print("✓ Hybrid mode enabled (linear + zero-shot)")
+    
     if args.demo:
         create_dummy_data(config)
     
@@ -216,7 +227,24 @@ def main(args):
     else:
         print("\n[5/9] Skipping homology features (disabled)")
     
-    print(f"\n[9/9] Preparing Dataset")
+    term_embeddings = None
+    if config.zero_shot.use_zero_shot or config.zero_shot.use_hybrid:
+        print(f"\nEncoding GO Terms for Zero-Shot Learning")
+        term_encoder = GOTermEncoder(
+            model_name=config.zero_shot.model_name,
+            cache_dir=config.paths.cache_dir,
+            device=config.model.device
+        )
+        term_embeddings = term_encoder.encode_ontology_terms(
+            go_loader,
+            use_cache=not args.no_cache
+        )
+        term_embeddings = {
+            onto: embs.to(config.model.device)
+            for onto, embs in term_embeddings.items()
+        }
+    
+    print(f"\nPreparing Dataset")
     protein_idx_map = {pid: i for i, pid in enumerate(label_builder.protein_ids)}
     valid_indices = [i for i, pid in enumerate(train_ids) if pid in protein_idx_map]
     
@@ -264,9 +292,16 @@ def main(args):
     print(f"  Val: {len(val_dataset)} samples")
     
     print("\nBuilding Model")
-    model = build_model(go_loader, config.model)
+    if config.zero_shot.use_zero_shot or config.zero_shot.use_hybrid:
+        model = build_hybrid_model(go_loader, config, term_embeddings)
+        mode_str = "Zero-Shot" if config.zero_shot.use_zero_shot else "Hybrid"
+        print(f"✓ {mode_str} model built")
+    else:
+        model = build_model(go_loader, config.model)
+        print("✓ Standard model built")
+    
     total_params = sum(p.numel() for p in model.parameters())
-    print(f"✓ Model built with {total_params:,} parameters")
+    print(f"  Total parameters: {total_params:,}")
     for onto in ['MFO', 'BPO', 'CCO']:
         print(f"  {onto}: {len(go_loader.ontology_terms[onto])} output terms")
     
@@ -337,12 +372,14 @@ def main(args):
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="CAFA-6 Baseline Training with Homology Features")
+    parser = argparse.ArgumentParser(description="CAFA-6 Training: Baseline + Homology + Zero-Shot")
     parser.add_argument("--device", type=str, default=None, help="Device to use (cuda/cpu)")
     parser.add_argument("--demo", action="store_true", help="Use demo mode with dummy data")
     parser.add_argument("--no-cache", action="store_true", help="Disable caching")
     parser.add_argument("--no-homology", action="store_true", help="Disable DIAMOND homology features")
     parser.add_argument("--rebuild-diamond", action="store_true", help="Force rebuild DIAMOND database")
+    parser.add_argument("--use-zero-shot", action="store_true", help="Enable zero-shot GO term encoding (pure zero-shot)")
+    parser.add_argument("--use-hybrid", action="store_true", help="Enable hybrid mode (linear + zero-shot)")
     
     args = parser.parse_args()
     main(args)

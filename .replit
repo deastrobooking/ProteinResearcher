@@ -16,15 +16,15 @@ author = "agent"
 
 [[workflows.workflow.tasks]]
 task = "workflow.run"
-args = "CAFA-6 Demo"
+args = "CAFA-6 Hybrid Demo"
 
 [[workflows.workflow]]
-name = "CAFA-6 Demo"
+name = "CAFA-6 Hybrid Demo"
 author = "agent"
 
 [[workflows.workflow.tasks]]
 task = "shell.exec"
-args = "python cafa6_predictor/main.py --demo"
+args = "python cafa6_predictor/main.py --demo --use-hybrid"
 
 [workflows.workflow.metadata]
 outputType = "console"
