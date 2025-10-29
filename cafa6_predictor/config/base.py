@@ -43,6 +43,22 @@ class ModelConfig:
 
 
 @dataclass
+class HomologyConfig:
+    """Homology search configuration"""
+    use_homology: bool = True
+    homology_feature_dim: int = 128
+    
+    max_target_seqs: int = 100
+    evalue: float = 1e-3
+    sensitivity: str = 'sensitive'
+    threads: int = 4
+    
+    min_identity: float = 30.0
+    min_coverage: float = 0.5
+    top_k_hits: int = 10
+
+
+@dataclass
 class EvaluationConfig:
     """Evaluation and submission configuration"""
     max_terms_per_protein: int = 1500
@@ -59,6 +75,7 @@ class Config:
     """Main configuration object"""
     paths: PathConfig = field(default_factory=PathConfig)
     model: ModelConfig = field(default_factory=ModelConfig)
+    homology: HomologyConfig = field(default_factory=HomologyConfig)
     evaluation: EvaluationConfig = field(default_factory=EvaluationConfig)
     
     ontologies: tuple = ('MFO', 'BPO', 'CCO')
@@ -66,3 +83,6 @@ class Config:
     def __post_init__(self):
         self.paths.cache_dir.mkdir(parents=True, exist_ok=True)
         self.paths.checkpoint_dir.mkdir(parents=True, exist_ok=True)
+        
+        if self.homology.use_homology:
+            self.model.embedding_dim = 1280 + self.homology.homology_feature_dim

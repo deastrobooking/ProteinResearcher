@@ -13,11 +13,34 @@ from models import build_model
 from models.dataset import CAFA6Dataset
 from models.trainer import Trainer
 from evaluation import AncestorClosure, evaluate_predictions, SubmissionWriter
+from homology import DiamondRunner, HomologyFeatureExtractor
+
+
+def load_sequences(config: Config):
+    """Load protein sequences for homology search"""
+    sequences = {}
+    
+    if config.paths.train_sequences.exists():
+        from Bio import SeqIO
+        for record in SeqIO.parse(config.paths.train_sequences, 'fasta'):
+            sequences[record.id] = str(record.seq)
+    else:
+        print("⚠ Sequence file not found, generating dummy sequences...")
+        amino_acids = 'ACDEFGHIKLMNPQRSTVWY'
+        for i in range(100):
+            pid = f"P{i:05d}"
+            seq_len = np.random.randint(100, 500)
+            seq = ''.join(np.random.choice(list(amino_acids), seq_len))
+            sequences[pid] = seq
+    
+    return sequences
 
 
 def load_embeddings(config: Config):
     """Load pre-computed embeddings"""
     print("\n[Loading Embeddings]")
+    
+    base_emb_dim = 1280
     
     if not config.paths.train_embeddings.exists():
         print(f"⚠ Training embeddings not found at {config.paths.train_embeddings}")
@@ -25,11 +48,10 @@ def load_embeddings(config: Config):
         
         n_train = 100
         n_test = 20
-        emb_dim = config.model.embedding_dim
         
-        train_embeddings = np.random.randn(n_train, emb_dim).astype(np.float32)
+        train_embeddings = np.random.randn(n_train, base_emb_dim).astype(np.float32)
         train_ids = [f"P{i:05d}" for i in range(n_train)]
-        test_embeddings = np.random.randn(n_test, emb_dim).astype(np.float32)
+        test_embeddings = np.random.randn(n_test, base_emb_dim).astype(np.float32)
         test_ids = [f"T{i:05d}" for i in range(n_test)]
         
         config.paths.train_embeddings.parent.mkdir(parents=True, exist_ok=True)
@@ -120,6 +142,11 @@ def main(args):
     config.model.device = args.device if args.device else ('cuda' if torch.cuda.is_available() else 'cpu')
     print(f"\nDevice: {config.model.device}")
     
+    if args.no_homology:
+        config.homology.use_homology = False
+        config.model.embedding_dim = 1280
+        print("⚠ Homology features disabled")
+    
     if args.demo:
         create_dummy_data(config)
     
@@ -135,9 +162,61 @@ def main(args):
     ia_loader = IAWeightLoader(go_loader, config.paths.cache_dir)
     ia_loader.load(config.paths.ia_weights, use_cache=not args.no_cache)
     
-    print("\n[4/7] Loading Embeddings")
+    print("\n[4/9] Loading Embeddings")
     train_embeddings, train_ids, test_embeddings, test_ids = load_embeddings(config)
     
+    if config.homology.use_homology:
+        print("\n[5/9] Loading Protein Sequences")
+        sequences = load_sequences(config)
+        print(f"✓ Loaded {len(sequences)} protein sequences")
+        
+        print("\n[6/9] Building DIAMOND Database")
+        diamond_runner = DiamondRunner(cache_dir=config.paths.cache_dir)
+        diamond_runner.build_database(sequences, force_rebuild=args.rebuild_diamond)
+        
+        print("\n[7/9] Running DIAMOND Homology Search")
+        alignments = diamond_runner.run_blastp(
+            query_sequences=sequences,
+            max_target_seqs=config.homology.max_target_seqs,
+            evalue=config.homology.evalue,
+            sensitivity=config.homology.sensitivity,
+            threads=config.homology.threads
+        )
+        print(f"✓ Found {len(alignments)} alignments")
+        
+        print("\n[8/9] Extracting Homology Features")
+        protein_go_map = {}
+        for pid in label_builder.protein_ids:
+            terms = []
+            for onto in ['MFO', 'BPO', 'CCO']:
+                labels = label_builder.labels[onto]
+                idx = list(label_builder.protein_ids).index(pid)
+                term_indices = np.where(labels[idx] > 0)[0]
+                for term_idx in term_indices:
+                    terms.append(go_loader.ontology_terms[onto][term_idx])
+            protein_go_map[pid] = terms
+        
+        homology_extractor = HomologyFeatureExtractor(
+            go_terms=protein_go_map,
+            ontology_terms=go_loader.ontology_terms,
+            min_identity=config.homology.min_identity,
+            min_coverage=config.homology.min_coverage,
+            top_k_hits=config.homology.top_k_hits
+        )
+        
+        homology_features_train = homology_extractor.create_homology_features(
+            alignments, train_ids, config.homology.homology_feature_dim
+        )
+        
+        train_embeddings = homology_extractor.combine_features(
+            train_embeddings, homology_features_train, train_ids
+        )
+        
+        print(f"✓ Combined embeddings shape: {train_embeddings.shape}")
+    else:
+        print("\n[5/9] Skipping homology features (disabled)")
+    
+    print(f"\n[9/9] Preparing Dataset")
     protein_idx_map = {pid: i for i, pid in enumerate(label_builder.protein_ids)}
     valid_indices = [i for i, pid in enumerate(train_ids) if pid in protein_idx_map]
     
@@ -184,14 +263,14 @@ def main(args):
     print(f"  Train: {len(train_dataset)} samples")
     print(f"  Val: {len(val_dataset)} samples")
     
-    print("\n[5/7] Building Model")
+    print("\nBuilding Model")
     model = build_model(go_loader, config.model)
     total_params = sum(p.numel() for p in model.parameters())
     print(f"✓ Model built with {total_params:,} parameters")
     for onto in ['MFO', 'BPO', 'CCO']:
         print(f"  {onto}: {len(go_loader.ontology_terms[onto])} output terms")
     
-    print("\n[6/7] Training")
+    print("\nTraining")
     pos_weights = label_builder.compute_pos_weights()
     trainer = Trainer(model, config.model, pos_weights, config.model.device)
     
@@ -212,7 +291,7 @@ def main(args):
             checkpoint_path = config.paths.checkpoint_dir / "best_model.pt"
             trainer.save_checkpoint(checkpoint_path, epoch, train_metrics)
     
-    print("\n[7/7] Evaluation")
+    print("\nEvaluation")
     
     if len(val_dataset) == 0:
         print("⚠ Validation set is empty (too few samples). Using training set for evaluation.")
@@ -258,10 +337,12 @@ def main(args):
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="CAFA-6 Baseline Training")
+    parser = argparse.ArgumentParser(description="CAFA-6 Baseline Training with Homology Features")
     parser.add_argument("--device", type=str, default=None, help="Device to use (cuda/cpu)")
     parser.add_argument("--demo", action="store_true", help="Use demo mode with dummy data")
     parser.add_argument("--no-cache", action="store_true", help="Disable caching")
+    parser.add_argument("--no-homology", action="store_true", help="Disable DIAMOND homology features")
+    parser.add_argument("--rebuild-diamond", action="store_true", help="Force rebuild DIAMOND database")
     
     args = parser.parse_args()
     main(args)
