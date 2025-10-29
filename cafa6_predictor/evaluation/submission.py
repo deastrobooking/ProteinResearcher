@@ -89,4 +89,4 @@ class SubmissionWriter:
         print(f"  Unique proteins: {df['protein_id'].nunique():,}")
         print(f"  Predictions per protein: {len(df) / df['protein_id'].nunique():.1f} (avg)")
         
-        return dfn df
+        return df
