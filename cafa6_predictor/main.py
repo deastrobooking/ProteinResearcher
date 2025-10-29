@@ -344,7 +344,17 @@ def main(args):
             train_embeddings, homology_features_train, train_ids
         )
         
-        print(f"✓ Combined embeddings shape: {train_embeddings.shape}")
+        # Extract homology features for test set as well
+        homology_features_test = homology_extractor.create_homology_features(
+            alignments, test_ids, config.homology.homology_feature_dim
+        )
+        
+        test_embeddings = homology_extractor.combine_features(
+            test_embeddings, homology_features_test, test_ids
+        )
+        
+        print(f"✓ Combined train embeddings shape: {train_embeddings.shape}")
+        print(f"✓ Combined test embeddings shape: {test_embeddings.shape}")
     else:
         print("\n[5/9] Skipping homology features (disabled)")
     
