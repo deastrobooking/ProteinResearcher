@@ -7,7 +7,7 @@ channel = "stable-25_05"
 packages = ["diamond", "glibcLocales", "pkg-config"]
 
 [workflows]
-runButton = "CAFA-6 Real Data Run"
+runButton = "CAFA-6 Full Ensemble + Export CSV"
 
 [[workflows.workflow]]
 name = "Project"
@@ -88,3 +88,25 @@ mode = "sequential"
 [[workflows.workflow.tasks]]
 task = "shell.exec"
 args = "python cafa6_predictor/main.py --no-homology --use-ensemble --ensemble-plms esm2,prott5,ankh --use-hierarchical-loss --hierarchical-weight 0.1"
+
+[[workflows.workflow]]
+name = "CAFA-6 Full Ensemble + Submit"
+author = 8097281
+mode = "sequential"
+
+[[workflows.workflow.tasks]]
+task = "shell.exec"
+args = "python cafa6_predictor/main.py --use-ensemble --ensemble-plms esm2,prott5,ankh --use-hierarchical-loss --hierarchical-weight 0.1"
+
+[[workflows.workflow.tasks]]
+task = "shell.exec"
+args = "kaggle competitions submit -c cafa-6-protein-function-prediction -f submission.csv -m \"Full ensemble: ESM2+ProtT5+Ankh with hierarchical loss\""
+
+[[workflows.workflow]]
+name = "CAFA-6 Full Ensemble + Export CSV"
+author = 8097281
+mode = "sequential"
+
+[[workflows.workflow.tasks]]
+task = "shell.exec"
+args = "python cafa6_predictor/main.py --use-ensemble --ensemble-plms esm2,prott5,ankh --use-hierarchical-loss --hierarchical-weight 0.1"
