@@ -1,0 +1,35 @@
+format-version: 1.2
+data-version: releases/2025-06-01
+
+[Term]
+id: GO:0008150
+name: biological_process
+namespace: biological_process
+
+[Term]
+id: GO:0005575
+name: cellular_component
+namespace: cellular_component
+
+[Term]
+id: GO:0003674
+name: molecular_function
+namespace: molecular_function
+
+[Term]
+id: GO:0001234
+name: test_bp_term
+namespace: biological_process
+is_a: GO:0008150
+
+[Term]
+id: GO:0005678
+name: test_cc_term
+namespace: cellular_component
+is_a: GO:0005575
+
+[Term]
+id: GO:0003456
+name: test_mf_term
+namespace: molecular_function
+is_a: GO:0003674
