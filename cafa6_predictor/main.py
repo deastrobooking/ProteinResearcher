@@ -483,7 +483,10 @@ def main(args):
     
     if len(val_dataset) == 0:
         print("⚠ Validation set is empty (too few samples). Using training set for evaluation.")
-        eval_loader = train_loader
+        # Use training set for evaluation with non-shuffled loader for proper alignment
+        eval_dataset = Subset(dataset, train_indices)
+        eval_loader = DataLoader(eval_dataset, batch_size=config.model.batch_size,
+                                shuffle=False, num_workers=0)
         eval_indices = train_indices
     else:
         print("Generating validation predictions...")
