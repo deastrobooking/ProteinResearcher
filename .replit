@@ -69,7 +69,7 @@ mode = "sequential"
 
 [[workflows.workflow.tasks]]
 task = "shell.exec"
-args = "python cafa6_predictor/main.py --no-homology"
+args = "python cafa6_predictor/main.py"
 
 [[workflows.workflow]]
 name = "CAFA-6 Full Pipeline (Real Data)"
