@@ -1,0 +1,343 @@
+Great starting point. That CAFA5 demo notebook runs, but a few things make it non-compliant/weak for CAFA6. Below is a compact “fix pack” you can paste in to get (a) **proper labels from CAFA6**, (b) **correct multilabel training**, (c) **ic-weighted thresholding**, and (d) **submission formatting**.
+
+---
+
+# What must change (quick hits)
+
+1. **Labels**: you’re using `train-targets-top500.npy` (CAFA5). Build labels from **CAFA6 `train_terms.tsv`** instead, and map to GO IDs present in **`go-basic.obo`** (2025-06-01).
+2. **Loss/metric**: multilabel needs **`BCEWithLogitsLoss`** (not CrossEntropy) and **`torchmetrics.MultilabelF1Score(..., threshold=?, logits=True)`**.
+3. **Ontology awareness**: train **per subontology (MFO/BPO/CCO)** or one big head but at least tune thresholds **per ontology**.
+4. **Ancestor closure & IA weights**: pick thresholds that maximize **information-accretion weighted F1** (use `IA.tsv`) **after** closure.
+5. **Submission**: exactly 3 columns, **tab-separated**, **no zeros**, ≤ **3 significant figures**, and **≤1500 total terms per protein** (MF+BP+CC combined).
+
+---
+
+# Drop-in patches
+
+## A) Build label space from CAFA6 files
+
+```python
+# pip install obonet networkx
+import pandas as pd, numpy as np, obonet, networkx as nx, re
+from pathlib import Path
+
+MAIN_DIR = Path("/kaggle/input/cafa-6-protein-function-prediction")
+TRAIN_TERMS = MAIN_DIR / "Train/train_terms.tsv"
+GO_OBO = MAIN_DIR / "Train/go-basic.obo"
+IA_TSV = MAIN_DIR / "IA.tsv"
+
+# ---- Load GO dag (child->parent across is_a & part_of) ----
+def load_go_dag(obo_path: Path):
+    Gm = obonet.read_obo(str(obo_path))
+    G = nx.DiGraph()
+    for n,d in Gm.nodes(data=True):
+        if not isinstance(n, str) or not n.startswith("GO:"): 
+            continue
+        ns = d.get('namespace', '')
+        parents = []
+        for rel in ('is_a','part_of'):
+            for edge in d.get(rel, []):
+                p = edge.split(' ! ')[0] if ' ! ' in edge else edge
+                if p.startswith("GO:"): parents.append(p)
+        G.add_node(n, namespace=ns)
+        for p in parents:
+            G.add_edge(n, p)
+    return G
+
+GO = load_go_dag(GO_OBO)
+
+def onto_of(go_id):
+    ns = GO.nodes[go_id]['namespace']
+    return {'biological_process':'BPO','cellular_component':'CCO','molecular_function':'MFO'}.get(ns)
+
+# ---- Terms & indices per ontology ----
+TERMS = {'MFO':[], 'BPO':[], 'CCO':[]}
+for n in GO.nodes:
+    o = onto_of(n)
+    if o: TERMS[o].append(n)
+for o in TERMS: TERMS[o] = sorted(TERMS[o])
+IDX = {o:{t:i for i,t in enumerate(TERMS[o])} for o in TERMS}
+
+# ---- IA weights ----
+ia_df = pd.read_csv(IA_TSV, sep="\t", header=None, names=["go","ia"])
+IA = {r.go: float(r.ia) for r in ia_df.itertuples(index=False)}
+IA_VEC = {o: np.array([IA.get(t, 0.0) for t in TERMS[o]], dtype=np.float32) for o in TERMS}
+
+# ---- Build training label matrices from CAFA6 train_terms.tsv ----
+tt = pd.read_csv(TRAIN_TERMS, sep="\t", header=None, names=["pid","go","onto"])
+tt = tt[tt['go'].isin(GO.nodes)]  # ensure term exists in this GO snapshot
+pids = sorted(tt['pid'].unique())
+PID_INDEX = {p:i for i,p in enumerate(pids)}
+
+Y = {o: np.zeros((len(pids), len(TERMS[o])), dtype=np.uint8) for o in TERMS}
+for pid, go in zip(tt['pid'], tt['go']):
+    o = onto_of(go)
+    if o and go in IDX[o]:
+        Y[o][PID_INDEX[pid], IDX[o][go]] = 1
+```
+
+> Remove all references to `train-targets-top500.npy`. Your label space is now exactly the CAFA6 GO set.
+
+---
+
+## B) Correct dataset & model plumbing
+
+Replace the dataset so **train** returns `(embedding, dict{onto:multi-hot})` or train **three separate heads**. A simple approach: **three heads**, same input embedding.
+
+```python
+import torch, torch.nn as nn
+from torch.utils.data import Dataset, DataLoader
+import numpy as np
+
+EMBEDS_PATH = "/kaggle/input/cafa-5-ems-2-embeddings-numpy"  # you can start with these; later swap in fresh ESM2 for CAFA6 train
+EMB_DIM = 1280  # EMS2
+
+class CAFA6EmbDataset(Dataset):
+    def __init__(self, split="train"):
+        if split=="train":
+            ids = np.load(f"{EMBEDS_PATH}/train_ids.npy", allow_pickle=True)
+            X = np.load(f"{EMBEDS_PATH}/train_embeddings.npy")
+            # Reindex to CAFA6 pid order; drop any missing
+            keep = [PID_INDEX[p] for p in pids if p in ids]
+            id2row = {ids[i]:i for i in range(len(ids))}
+            rows = [id2row[p] for p in pids if p in id2row]
+            self.ids = [p for p in pids if p in id2row]
+            self.X = torch.tensor(X[rows], dtype=torch.float32)
+            self.Y = {o: torch.tensor(Y[o][keep], dtype=torch.float32) for o in TERMS}
+        else:
+            ids = np.load(f"{EMBEDS_PATH}/test_ids.npy", allow_pickle=True)
+            X = np.load(f"{EMBEDS_PATH}/test_embeddings.npy")
+            self.ids = list(ids)
+            self.X = torch.tensor(X, dtype=torch.float32)
+            self.Y = None
+
+    def __len__(self): return self.X.shape[0]
+    def __getitem__(self, i):
+        if self.Y is None:
+            return self.X[i], self.ids[i]
+        return self.X[i], {o:self.Y[o][i] for o in TERMS}
+```
+
+**Heads + BCEWithLogitsLoss**:
+
+```python
+class Head(nn.Module):
+    def __init__(self, in_dim, out_dim):
+        super().__init__()
+        self.net = nn.Sequential(
+            nn.Linear(in_dim, 1024), nn.ReLU(),
+            nn.Dropout(0.2),
+            nn.Linear(1024, out_dim)
+        )
+    def forward(self, x): return self.net(x)
+
+class MultiOntoModel(nn.Module):
+    def __init__(self, in_dim, sizes):
+        super().__init__()
+        self.mfo = Head(in_dim, sizes['MFO'])
+        self.bpo = Head(in_dim, sizes['BPO'])
+        self.cco = Head(in_dim, sizes['CCO'])
+    def forward(self, x):
+        return {'MFO': self.mfo(x), 'BPO': self.bpo(x), 'CCO': self.cco(x)}
+```
+
+Training loop (note **BCEWithLogitsLoss** and **`logits=True` metric**) :
+
+```python
+from torchmetrics.classification import MultilabelF1Score
+
+device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+train_ds = CAFA6EmbDataset("train")
+n_mfo, n_bpo, n_cco = len(TERMS['MFO']), len(TERMS['BPO']), len(TERMS['CCO'])
+model = MultiOntoModel(EMB_DIM, {'MFO':n_mfo,'BPO':n_bpo,'CCO':n_cco}).to(device)
+
+# Optional positive class weights to fight imbalance
+def pos_weights(mat):
+    pos = mat.sum(axis=0)
+    neg = mat.shape[0] - pos
+    w = (neg / (pos+1e-6))
+    w[np.isinf(w)] = 0.0
+    return torch.tensor(w, dtype=torch.float32)
+
+pw = {o: pos_weights(Y[o]) for o in TERMS}
+crit = {o: nn.BCEWithLogitsLoss(pos_weight=pw[o].to(device)) for o in TERMS}
+
+metric = {o: MultilabelF1Score(num_labels=len(TERMS[o]), average='micro', threshold=0.5, logits=True).to(device)
+          for o in TERMS}
+
+loader = DataLoader(train_ds, batch_size=256, shuffle=True, num_workers=2, pin_memory=True)
+opt = torch.optim.AdamW(model.parameters(), lr=1e-3, weight_decay=1e-4)
+
+model.train()
+for epoch in range(6):
+    loss_sum, n = 0.0, 0
+    mfo_f1=bpo_f1=cco_f1=0.0
+    for xb, yb in loader:
+        xb = xb.to(device)
+        yb = {o: yb[o].to(device) for o in TERMS}
+        opt.zero_grad()
+        out = model(xb)
+        loss = sum(crit[o](out[o], yb[o]) for o in TERMS)
+        loss.backward()
+        nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+        opt.step()
+        loss_sum += loss.item()*xb.size(0); n += xb.size(0)
+        mfo_f1 += metric['MFO'](out['MFO'], yb['MFO']).item()*xb.size(0)
+        bpo_f1 += metric['BPO'](out['BPO'], yb['BPO']).item()*xb.size(0)
+        cco_f1 += metric['CCO'](out['CCO'], yb['CCO']).item()*xb.size(0)
+    print(f"Epoch {epoch+1}: loss={loss_sum/n:.4f}  F1(MFO/BPO/CCO)={(mfo_f1/n):.3f}/{(bpo_f1/n):.3f}/{(cco_f1/n):.3f}")
+```
+
+---
+
+## C) Ancestor closure + IA-weighted maxF1 thresholding
+
+```python
+import numpy as np
+
+# Precompute parent lists per ontology (as indices)
+PARENTS = {o:{j:set() for j in range(len(TERMS[o]))} for o in TERMS}
+for o in TERMS:
+    idx = IDX[o]
+    for j,t in enumerate(TERMS[o]):
+        # ancestors within same ontology:
+        anc_terms = {a for a in nx.ancestors(GO, t) if a in idx}
+        PARENTS[o][j] = {idx[a] for a in anc_terms}
+
+def ancestor_close_scores(S, parents):
+    # S: [N,C]; propagate child->parent via max until convergence
+    P = S.copy()
+    changed=True
+    while changed:
+        changed=False
+        for j, pars in parents.items():
+            if not pars: continue
+            pv = P[:, list(pars)]
+            nv = np.maximum(pv, P[:, [j]])
+            if (nv>pv).any():
+                P[:, list(pars)] = nv
+                changed=True
+    return P
+
+def maxF1_ic(scores, y_true, ia_vec, parents, thresholds=np.linspace(0.01,0.99,99)):
+    S = ancestor_close_scores(scores, parents)
+    bestF, bestT = 0.0, 0.5
+    ia = ia_vec.reshape(1,-1)
+    for t in thresholds:
+        P = (S>=t).astype(np.uint8)
+        tp = (P & (y_true==1)) * ia
+        fp = (P & (y_true==0)) * ia
+        fn = ((1-P) & (y_true==1)) * ia
+        wP = tp.sum() / (tp.sum() + fp.sum() + 1e-12)
+        wR = tp.sum() / (tp.sum() + fn.sum() + 1e-12)
+        F = 2*wP*wR/(wP+wR+1e-12)
+        if F>bestF: bestF, bestT = F, t
+    return bestF, bestT
+```
+
+**How to use** (with a held-out split—do a simple 90/10 for now):
+
+```python
+# Quick validation split
+N = len(train_ds)
+perm = np.random.RandomState(42).permutation(N)
+cut = int(0.9*N)
+train_idx, val_idx = perm[:cut], perm[cut:]
+
+# Run model->logits on val
+val_X = train_ds.X[val_idx].to(device)
+with torch.no_grad():
+    out = model(val_X)
+val_scores = {o: torch.sigmoid(out[o]).cpu().numpy() for o in TERMS}
+val_truth  = {o: train_ds.Y[o].numpy()[val_idx] for o in TERMS}
+
+# Pick thresholds per ontology
+THRESH = {}
+for o in TERMS:
+    bestF, bestT = maxF1_ic(val_scores[o], val_truth[o], IA_VEC[o], PARENTS[o])
+    THRESH[o] = float(bestT)
+    print(o, "best ic-F1:", round(bestF,4), " @ thr=", round(bestT,3))
+```
+
+---
+
+## D) Prediction + compliant submission writer
+
+```python
+from torch.utils.data import DataLoader
+
+def to_sig3(x: float) -> str:
+    # clamp to (0,1], 3 significant figures
+    x = float(np.clip(x, 1e-6, 1.0))
+    return f"{x:.3g}"
+
+def predict_and_write(model, out_path="submission.tsv", max_terms_per_protein=1500):
+    test_ds = CAFA6EmbDataset("test")
+    test_loader = DataLoader(test_ds, batch_size=512, shuffle=False, num_workers=2, pin_memory=True)
+    model.eval()
+    rows = []
+    with torch.no_grad():
+        for xb, ids in test_loader:
+            xb = xb.to(device)
+            out = model(xb)
+            probs = {o: torch.sigmoid(out[o]).cpu().numpy() for o in TERMS}
+            # ancestor closure before thresholding
+            for o in TERMS:
+                probs[o] = ancestor_close_scores(probs[o], PARENTS[o])
+            for bi, pid in enumerate(ids):
+                triples = []
+                for o in TERMS:
+                    # threshold & collect (pid, go, p)
+                    sel = np.where(probs[o][bi] >= THRESH[o])[0]
+                    for j in sel:
+                        triples.append( (pid, TERMS[o][j], float(probs[o][bi, j])) )
+                # cap 1500 by prob desc
+                triples.sort(key=lambda x: x[2], reverse=True)
+                triples = triples[:max_terms_per_protein]
+                for pid, go, p in triples:
+                    rows.append((pid, go, to_sig3(p)))
+    sub = pd.DataFrame(rows, columns=["Id","GO term","Confidence"])
+    # Kaggle sample uses no header; tab-separated; 3 columns
+    sub.to_csv(out_path, sep="\t", header=False, index=False)
+    return sub
+
+submission_df = predict_and_write(model, "submission.tsv")
+```
+
+**If you want to ensemble** your BLAST/QuickGO/DeepGOZero file: do a simple **max-pool merge** on `(Id, GO term)`—it’s robust for probabilities from heterogeneous heads:
+
+```python
+# Outer-merge with existing homology/zero-shot file, keep max prob
+h = pd.read_csv('/kaggle/input/blast-quick-sprof-zero-pred/submission.tsv',
+                sep='\t', header=None, names=['Id','GO term','Confidence_h'])
+m = pd.read_csv('submission.tsv', sep='\t', header=None, names=['Id','GO term','Confidence_m'])
+comb = h.merge(m, on=['Id','GO term'], how='outer')
+comb['Confidence_h'] = comb['Confidence_h'].astype(float)
+comb['Confidence_m'] = comb['Confidence_m'].astype(float)
+comb['Confidence'] = np.fmax(comb['Confidence_h'].fillna(-1), comb['Confidence_m'].fillna(-1))
+comb = comb[['Id','GO term','Confidence']]
+# Re-apply 3 sig figs and write
+comb['Confidence'] = comb['Confidence'].clip(1e-6,1.0).map(lambda x: f"{x:.3g}")
+comb.to_csv('submission.tsv', sep='\t', header=False, index=False)
+```
+
+---
+
+# Why your original notebook underperforms
+
+* **Wrong loss**: `CrossEntropyLoss` assumes mutually exclusive classes; CAFA is **multi-label**.
+* **Wrong metric config**: `MultilabelF1Score` without `logits=True` and fixed threshold means you were measuring post-softmax logits incorrectly.
+* **CAFA5 label artifact**: training against `top500.npy` ignores most CAFA6 terms and all the **IA weighting** and **ontology structure**.
+* **No closure/IA thresholds**: CAFA scoring weights rare/deep terms higher and requires parent implication; you need both to set thresholds.
+
+---
+
+# Nice-to-haves (quick toggles)
+
+* Mixed precision: wrap forward/backward in `torch.autocast(device_type='cuda', dtype=torch.float16)` + `GradScaler`.
+* CV by **taxon** (use `train_taxonomy.tsv`) to reduce optimistic leakage.
+* Small **hierarchical regularizer**: penalize child logit > parent logit (stabilizes closure).
+* Swap EMS2 CAFA5 embeddings for **fresh ESM-2** or **ProtT5** on CAFA6 train/test when you can (quality bump).
+* Calibrate per-ontology with **isotonic** or **Platt** on the validation fold before threshold search.
+
+If you want, I can turn this into a single runnable Kaggle cell order (imports → GO/IA load → labels → dataset → model → train → threshold → predict → write).
