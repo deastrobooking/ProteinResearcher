@@ -49,6 +49,13 @@ class SubmissionWriter:
         """
         from .metrics import AncestorClosure
         
+        demo_id_count = sum(1 for pid in protein_ids if str(pid).startswith('T0'))
+        if demo_id_count > 0:
+            print(f"\n⚠️  WARNING: Detected {demo_id_count} demo/test protein IDs (starting with 'T0')")
+            print(f"   This submission will score 0.000 on CAFA-6 competition!")
+            print(f"   Real CAFA-6 expects protein IDs like: A0A0C5B5G6, A0A1B0GTW7, etc.")
+            print(f"   To fix: Remove --use-testdata flag and use real CAFA-6 data\n")
+        
         rows = []
         
         for onto in ['MFO', 'BPO', 'CCO']:

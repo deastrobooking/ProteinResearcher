@@ -177,11 +177,14 @@ python cafa6_predictor/main.py \
   --use-hierarchical-loss
 ```
 
-### Using Test Data Subdirectory
+### Using Test Data Subdirectory (Demo Only!)
 
-If your data is in `cafa6_predictor/data/testdata/`:
+⚠️ **WARNING**: The `--use-testdata` flag is for **testing/debugging only**. It uses synthetic protein IDs (T00000-T00019) that will score 0.000 on CAFA-6 competition.
+
+For actual competition submissions, **DO NOT use this flag**. Use real CAFA-6 data in `cafa6_predictor/data/` instead.
 
 ```bash
+# DEMO ONLY - will score 0.000 on competition
 python cafa6_predictor/main.py --use-testdata --no-homology
 ```
 
