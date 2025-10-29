@@ -1,0 +1,153 @@
+ Environment updated. Reloading shell...
+================================================================================
+CAFA-6 PROTEIN FUNCTION PREDICTION - BASELINE TRAINING
+================================================================================
+
+Device: cpu
+✓ Multi-pLM ensemble enabled: esm2, prott5, ankh
+  Fusion strategy: concat
+✓ Hierarchical consistency loss enabled (weight=0.1)
+
+[1/7] Loading GO Ontology
+Loading GO graph from cache: cafa6_predictor/cache/go_graph.pkl
+✓ Loaded 6 GO terms from cache
+
+[2/7] Building Labels
+Loading labels from cache: cafa6_predictor/cache/labels.pkl
+✓ Loaded labels for 2 proteins
+
+[3/7] Loading IA Weights
+Loading IA weights from cache: cafa6_predictor/cache/ia_weights.pkl
+✓ Loaded 6 IA weights from cache
+
+[4/9] Loading Embeddings
+
+[Loading Embeddings]
+
+[Loading Multi-pLM Ensemble Embeddings]
+✓ Loaded real IDs: 100 train, 20 test
+⚠ Some pLM embeddings not found, creating demo embeddings...
+
+[Fusing 3 pLMs with strategy: concat]
+✓ Fused train embeddings: (100, 3072)
+✓ Fused test embeddings: (20, 3072)
+
+[5/9] Loading Protein Sequences
+✓ Loaded 82404 protein sequences
+
+[6/9] Building DIAMOND Database
+✓ DIAMOND database already exists: cafa6_predictor/cache/diamond.dmnd
+
+[7/9] Running DIAMOND Homology Search
+Loading cached DIAMOND results: cafa6_predictor/cache/diamond_blastp.tsv
+✓ Found 0 alignments
+
+[8/9] Extracting Homology Features
+✓ Combined embeddings shape: (100, 3200)
+
+Preparing Dataset
+
+✓ Aligned 2 proteins
+  Train: 2 samples
+  Val: 0 samples
+
+Building Model
+✓ Standard model built
+  Total parameters: 9,839,622
+  MFO: 2 output terms
+  BPO: 2 output terms
+  CCO: 2 output terms
+
+Training
+Creating hierarchical consistency losses...
+✓ Hierarchical losses created for all ontologies
+
+Epoch 1/6
+  Train Loss: 4.1425                                               
+  Train F1 - MFO: 0.000, BPO: 0.000, CCO: 0.500
+✓ Saved checkpoint to cafa6_predictor/checkpoints/best_model.pt
+
+Epoch 2/6
+  Train Loss: 0.3917                                               
+  Train F1 - MFO: 1.000, BPO: 1.000, CCO: 1.000
+✓ Saved checkpoint to cafa6_predictor/checkpoints/best_model.pt
+
+Epoch 3/6
+  Train Loss: 0.0318                                               
+  Train F1 - MFO: 1.000, BPO: 1.000, CCO: 1.000
+
+Epoch 4/6
+  Train Loss: 0.0033                                               
+  Train F1 - MFO: 1.000, BPO: 1.000, CCO: 1.000
+
+Epoch 5/6
+  Train Loss: 0.0005                                               
+  Train F1 - MFO: 1.000, BPO: 1.000, CCO: 1.000
+
+Epoch 6/6
+  Train Loss: 0.0001                                               
+  Train F1 - MFO: 1.000, BPO: 1.000, CCO: 1.000
+
+Evaluation
+⚠ Validation set is empty (too few samples). Using training set for evaluation.
+MFO: IC-weighted maxF1 = 1.0000 @ threshold = 0.010                
+BPO: IC-weighted maxF1 = 1.0000 @ threshold = 0.010
+CCO: IC-weighted maxF1 = 1.0000 @ threshold = 0.010
+Mean IC-weighted maxF1 = 1.0000
+
+Applying Top-K filtering (max 1500 terms per protein)...
+✓ Filtered predictions:
+  Max terms per protein: 2
+  Mean terms per protein: 1.5
+
+[Generating Kaggle Submission]
+Generating test predictions...
+Traceback (most recent call last):                                 
+  File "/home/runner/workspace/cafa6_predictor/main.py", line 612, in <module>
+    main(args)
+  File "/home/runner/workspace/cafa6_predictor/main.py", line 554, in main
+    test_predictions = trainer.predict(test_loader)
+                       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/runner/workspace/.pythonlibs/lib/python3.11/site-packages/torch/utils/_contextlib.py", line 120, in decorate_context
+    return func(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^
+  File "/home/runner/workspace/cafa6_predictor/models/trainer.py", line 160, in predict
+    outputs = self.model(embeddings)
+              ^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/runner/workspace/.pythonlibs/lib/python3.11/site-packages/torch/nn/modules/module.py", line 1775, in _wrapped_call_impl
+    return self._call_impl(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/runner/workspace/.pythonlibs/lib/python3.11/site-packages/torch/nn/modules/module.py", line 1786, in _call_impl
+    return forward_call(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/runner/workspace/cafa6_predictor/models/multionto_model.py", line 58, in forward
+    'MFO': self.mfo(x),
+           ^^^^^^^^^^^
+  File "/home/runner/workspace/.pythonlibs/lib/python3.11/site-packages/torch/nn/modules/module.py", line 1775, in _wrapped_call_impl
+    return self._call_impl(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/runner/workspace/.pythonlibs/lib/python3.11/site-packages/torch/nn/modules/module.py", line 1786, in _call_impl
+    return forward_call(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/runner/workspace/cafa6_predictor/models/multionto_model.py", line 22, in forward
+    return self.net(x)
+           ^^^^^^^^^^^
+  File "/home/runner/workspace/.pythonlibs/lib/python3.11/site-packages/torch/nn/modules/module.py", line 1775, in _wrapped_call_impl
+    return self._call_impl(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/runner/workspace/.pythonlibs/lib/python3.11/site-packages/torch/nn/modules/module.py", line 1786, in _call_impl
+    return forward_call(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/runner/workspace/.pythonlibs/lib/python3.11/site-packages/torch/nn/modules/container.py", line 250, in forward
+    input = module(input)
+            ^^^^^^^^^^^^^
+  File "/home/runner/workspace/.pythonlibs/lib/python3.11/site-packages/torch/nn/modules/module.py", line 1775, in _wrapped_call_impl
+    return self._call_impl(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/runner/workspace/.pythonlibs/lib/python3.11/site-packages/torch/nn/modules/module.py", line 1786, in _call_impl
+    return forward_call(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/runner/workspace/.pythonlibs/lib/python3.11/site-packages/torch/nn/modules/linear.py", line 134, in forward
+    return F.linear(input, self.weight, self.bias)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+RuntimeError: mat1 and mat2 shapes cannot be multiplied (20x3072 and 3200x1024)

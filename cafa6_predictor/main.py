@@ -538,6 +538,35 @@ def main(args):
         if stats['exceeds_limit'] > 0:
             print(f"  ⚠ {stats['exceeds_limit']} proteins exceed {config.evaluation.max_terms_per_protein} term limit")
     
+    # Generate submission file on test data
+    print("\n[Generating Kaggle Submission]")
+    print("Generating test predictions...")
+    
+    # Prepare test dataset
+    test_dataset = CAFA6Dataset(
+        test_embeddings,
+        test_ids,
+        {onto: np.zeros((len(test_ids), len(go_loader.ontology_terms[onto]))) for onto in ['MFO', 'BPO', 'CCO']}
+    )
+    test_loader = DataLoader(test_dataset, batch_size=config.model.batch_size, shuffle=False, num_workers=0)
+    
+    # Generate predictions
+    test_predictions = trainer.predict(test_loader)
+    
+    # Write submission file
+    submission_path = Path("submission.csv")
+    thresholds = {onto: results[onto]['best_threshold'] for onto in ['MFO', 'BPO', 'CCO']}
+    
+    SubmissionWriter.write_submission(
+        protein_ids=test_ids,
+        predictions=test_predictions,
+        go_terms=go_loader.ontology_terms,
+        thresholds=thresholds,
+        ancestor_closures=ancestor_closures,
+        output_path=submission_path,
+        max_terms_per_protein=config.evaluation.max_terms_per_protein
+    )
+    
     print("\n" + "="*80)
     print("TRAINING COMPLETE")
     print(f"Best Mean IC-weighted F1: {results['mean']['max_f1']:.4f}")
@@ -545,6 +574,7 @@ def main(args):
         print(f"  Hierarchical loss enabled (weight={config.optimization.hierarchical_loss_weight})")
     if config.optimization.use_topk_filter:
         print(f"  Top-K filtering enabled (max={config.evaluation.max_terms_per_protein} terms/protein)")
+    print(f"\n✓ Submission file ready: {submission_path}")
     print("="*80)
     
     return results
