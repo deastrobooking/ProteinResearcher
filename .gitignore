@@ -1,0 +1,74 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Virtual environments
+.pythonlibs/
+venv/
+ENV/
+env/
+
+# PyTorch
+*.pt
+*.pth
+*.ckpt
+
+# Data files
+cafa6_predictor/data/*.fasta
+cafa6_predictor/data/*.tsv
+cafa6_predictor/data/*.obo
+cafa6_predictor/data/*.npy
+cafa6_predictor/data/*.npz
+
+# Cache
+cafa6_predictor/cache/
+*.pkl
+*.pickle
+
+# Checkpoints
+cafa6_predictor/checkpoints/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+
+# Jupyter
+.ipynb_checkpoints/
+*.ipynb
+
+# Replit specific
+.replit
+replit.nix
+.pythonlibs
+.config/
+.cache/
+pyproject.toml
+uv.lock
