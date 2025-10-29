@@ -70,6 +70,21 @@ class ZeroShotConfig:
 
 
 @dataclass
+class EnsembleConfig:
+    """Multi-pLM ensemble configuration"""
+    use_ensemble: bool = False
+    fusion_strategy: str = 'concat'
+    
+    plm_models: Dict = field(default_factory=lambda: {
+        'esm2': {'file': 'train_embeddings.npy', 'dim': 1280, 'enabled': True},
+        'prott5': {'file': 'train_embeddings_prott5.npy', 'dim': 1024, 'enabled': False},
+        'ankh': {'file': 'train_embeddings_ankh.npy', 'dim': 768, 'enabled': False},
+    })
+    
+    output_projection_dim: int = None
+
+
+@dataclass
 class EvaluationConfig:
     """Evaluation and submission configuration"""
     max_terms_per_protein: int = 1500
@@ -88,6 +103,7 @@ class Config:
     model: ModelConfig = field(default_factory=ModelConfig)
     homology: HomologyConfig = field(default_factory=HomologyConfig)
     zero_shot: ZeroShotConfig = field(default_factory=ZeroShotConfig)
+    ensemble: EnsembleConfig = field(default_factory=EnsembleConfig)
     evaluation: EvaluationConfig = field(default_factory=EvaluationConfig)
     
     ontologies: tuple = ('MFO', 'BPO', 'CCO')
@@ -96,5 +112,22 @@ class Config:
         self.paths.cache_dir.mkdir(parents=True, exist_ok=True)
         self.paths.checkpoint_dir.mkdir(parents=True, exist_ok=True)
         
-        if self.homology.use_homology:
+        if self.ensemble.use_ensemble:
+            enabled_models = {k: v for k, v in self.ensemble.plm_models.items() if v['enabled']}
+            if not enabled_models:
+                raise ValueError("No pLM models enabled in ensemble configuration")
+            
+            if self.ensemble.fusion_strategy == 'concat':
+                base_dim = sum(v['dim'] for v in enabled_models.values())
+            else:
+                base_dim = list(enabled_models.values())[0]['dim']
+            
+            if self.ensemble.output_projection_dim:
+                base_dim = self.ensemble.output_projection_dim
+            
+            if self.homology.use_homology:
+                self.model.embedding_dim = base_dim + self.homology.homology_feature_dim
+            else:
+                self.model.embedding_dim = base_dim
+        elif self.homology.use_homology:
             self.model.embedding_dim = 1280 + self.homology.homology_feature_dim

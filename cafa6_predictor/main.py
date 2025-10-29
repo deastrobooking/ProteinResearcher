@@ -16,6 +16,8 @@ from models.trainer import Trainer
 from evaluation import AncestorClosure, evaluate_predictions, SubmissionWriter
 from homology import DiamondRunner, HomologyFeatureExtractor
 from zero_shot import GOTermEncoder
+from ensemble import EmbeddingFusion, load_multi_embeddings
+from ensemble.fusion import create_demo_multi_embeddings
 
 
 def load_sequences(config: Config):
@@ -39,8 +41,11 @@ def load_sequences(config: Config):
 
 
 def load_embeddings(config: Config):
-    """Load pre-computed embeddings"""
+    """Load pre-computed embeddings with optional multi-pLM ensemble"""
     print("\n[Loading Embeddings]")
+    
+    if config.ensemble.use_ensemble:
+        return load_ensemble_embeddings(config)
     
     base_emb_dim = 1280
     
@@ -71,6 +76,84 @@ def load_embeddings(config: Config):
     print(f"✓ Test embeddings: {test_embeddings.shape}")
     
     return train_embeddings, train_ids, test_embeddings, test_ids
+
+
+def load_ensemble_embeddings(config: Config):
+    """Load and fuse embeddings from multiple pLMs"""
+    print("\n[Loading Multi-pLM Ensemble Embeddings]")
+    
+    enabled_models = {k: v for k, v in config.ensemble.plm_models.items() 
+                     if v['enabled']}
+    
+    # Check if we have real ID files or need demo mode
+    has_real_ids = config.paths.train_ids.exists() and config.paths.test_ids.exists()
+    
+    if has_real_ids:
+        # Load real protein IDs
+        train_ids = np.load(config.paths.train_ids, allow_pickle=True).tolist()
+        test_ids = np.load(config.paths.test_ids, allow_pickle=True).tolist()
+        print(f"✓ Loaded real IDs: {len(train_ids)} train, {len(test_ids)} test")
+    else:
+        # Use demo mode IDs
+        n_train = 100
+        n_test = 20
+        train_ids = [f"P{i:05d}" for i in range(n_train)]
+        test_ids = [f"T{i:05d}" for i in range(n_test)]
+        print(f"⚠ Using demo mode IDs: {len(train_ids)} train, {len(test_ids)} test")
+    
+    # Check if all pLM embedding files exist
+    any_missing = any(not (config.paths.base_dir / v['file']).exists() 
+                      for v in enabled_models.values())
+    
+    if any_missing:
+        print("⚠ Some pLM embeddings not found, creating demo embeddings...")
+        plm_dims = {k: v['dim'] for k, v in enabled_models.items()}
+        train_embs_dict = create_demo_multi_embeddings(len(train_ids), plm_dims)
+        test_embs_dict = create_demo_multi_embeddings(len(test_ids), plm_dims)
+    else:
+        # Load real embeddings
+        print("✓ Loading real pLM embeddings...")
+        train_embs_dict = {}
+        test_embs_dict = {}
+        
+        for plm_name, plm_config in enabled_models.items():
+            # Train embeddings
+            train_file = config.paths.base_dir / plm_config['file']
+            train_embs = np.load(train_file)
+            
+            # Test embeddings (replace 'train' with 'test' in filename)
+            test_file = config.paths.base_dir / plm_config['file'].replace('train', 'test')
+            if test_file.exists():
+                test_embs = np.load(test_file)
+            else:
+                print(f"⚠ Test embeddings not found for {plm_name}, using dummy data")
+                test_embs = np.random.randn(len(test_ids), plm_config['dim']).astype(np.float32)
+            
+            train_embs_dict[plm_name] = train_embs
+            test_embs_dict[plm_name] = test_embs
+            
+            print(f"  {plm_name}: train {train_embs.shape}, test {test_embs.shape}")
+    
+    embedding_dims = {k: train_embs_dict[k].shape[1] for k in train_embs_dict.keys()}
+    
+    print(f"\n[Fusing {len(embedding_dims)} pLMs with strategy: {config.ensemble.fusion_strategy}]")
+    fusion_module = EmbeddingFusion(
+        embedding_dims=embedding_dims,
+        fusion_strategy=config.ensemble.fusion_strategy,
+        output_dim=config.ensemble.output_projection_dim
+    )
+    
+    train_tensors = {k: torch.from_numpy(v) for k, v in train_embs_dict.items()}
+    test_tensors = {k: torch.from_numpy(v) for k, v in test_embs_dict.items()}
+    
+    with torch.no_grad():
+        train_fused = fusion_module(train_tensors).numpy()
+        test_fused = fusion_module(test_tensors).numpy()
+    
+    print(f"✓ Fused train embeddings: {train_fused.shape}")
+    print(f"✓ Fused test embeddings: {test_fused.shape}")
+    
+    return train_fused, train_ids, test_fused, test_ids
 
 
 def create_dummy_data(config: Config):
@@ -157,6 +240,19 @@ def main(args):
         config.zero_shot.use_hybrid = True
         config.zero_shot.use_zero_shot = False
         print("✓ Hybrid mode enabled (linear + zero-shot)")
+    
+    if args.use_ensemble:
+        config.ensemble.use_ensemble = True
+        if args.ensemble_strategy:
+            config.ensemble.fusion_strategy = args.ensemble_strategy
+        if args.ensemble_plms:
+            plms = args.ensemble_plms.split(',')
+            for plm in config.ensemble.plm_models:
+                config.ensemble.plm_models[plm]['enabled'] = plm in plms
+        config.__post_init__()
+        enabled = [k for k, v in config.ensemble.plm_models.items() if v['enabled']]
+        print(f"✓ Multi-pLM ensemble enabled: {', '.join(enabled)}")
+        print(f"  Fusion strategy: {config.ensemble.fusion_strategy}")
     
     if args.demo:
         create_dummy_data(config)
@@ -372,7 +468,7 @@ def main(args):
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="CAFA-6 Training: Baseline + Homology + Zero-Shot")
+    parser = argparse.ArgumentParser(description="CAFA-6 Training: Baseline + Homology + Zero-Shot + Ensemble")
     parser.add_argument("--device", type=str, default=None, help="Device to use (cuda/cpu)")
     parser.add_argument("--demo", action="store_true", help="Use demo mode with dummy data")
     parser.add_argument("--no-cache", action="store_true", help="Disable caching")
@@ -380,6 +476,12 @@ if __name__ == "__main__":
     parser.add_argument("--rebuild-diamond", action="store_true", help="Force rebuild DIAMOND database")
     parser.add_argument("--use-zero-shot", action="store_true", help="Enable zero-shot GO term encoding (pure zero-shot)")
     parser.add_argument("--use-hybrid", action="store_true", help="Enable hybrid mode (linear + zero-shot)")
+    parser.add_argument("--use-ensemble", action="store_true", help="Enable multi-pLM ensemble")
+    parser.add_argument("--ensemble-strategy", type=str, default=None, 
+                       choices=['concat', 'weighted_avg', 'attention', 'gated'],
+                       help="Ensemble fusion strategy (default: concat)")
+    parser.add_argument("--ensemble-plms", type=str, default=None,
+                       help="Comma-separated list of pLMs to use (e.g., 'esm2,prott5,ankh')")
     
     args = parser.parse_args()
     main(args)
