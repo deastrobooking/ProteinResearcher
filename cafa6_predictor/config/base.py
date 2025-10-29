@@ -59,6 +59,17 @@ class HomologyConfig:
 
 
 @dataclass
+class ZeroShotConfig:
+    """Zero-shot GO term encoding configuration"""
+    use_zero_shot: bool = False
+    model_name: str = "sentence-transformers/all-MiniLM-L6-v2"
+    method: str = 'bilinear'
+    
+    use_hybrid: bool = False
+    hybrid_alpha: float = 0.5
+
+
+@dataclass
 class EvaluationConfig:
     """Evaluation and submission configuration"""
     max_terms_per_protein: int = 1500
@@ -76,6 +87,7 @@ class Config:
     paths: PathConfig = field(default_factory=PathConfig)
     model: ModelConfig = field(default_factory=ModelConfig)
     homology: HomologyConfig = field(default_factory=HomologyConfig)
+    zero_shot: ZeroShotConfig = field(default_factory=ZeroShotConfig)
     evaluation: EvaluationConfig = field(default_factory=EvaluationConfig)
     
     ontologies: tuple = ('MFO', 'BPO', 'CCO')
