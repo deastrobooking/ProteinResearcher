@@ -227,6 +227,19 @@ def main(args):
     config.model.device = args.device if args.device else ('cuda' if torch.cuda.is_available() else 'cpu')
     print(f"\nDevice: {config.model.device}")
     
+    # Update paths if using testdata directory
+    if args.use_testdata:
+        testdata_dir = Path("cafa6_predictor/data/testdata")
+        config.paths.base_dir = testdata_dir
+        config.paths.go_obo = testdata_dir / "go-basic.obo"
+        config.paths.train_terms = testdata_dir / "train_terms.tsv"
+        config.paths.ia_weights = testdata_dir / "IA.tsv"
+        config.paths.train_embeddings = testdata_dir / "train_embeddings.npy"
+        config.paths.train_ids = testdata_dir / "train_ids.npy"
+        config.paths.test_embeddings = testdata_dir / "test_embeddings.npy"
+        config.paths.test_ids = testdata_dir / "test_ids.npy"
+        print(f"✓ Using test data from: {testdata_dir}")
+    
     if args.no_homology:
         config.homology.use_homology = False
         config.model.embedding_dim = 1280
@@ -559,6 +572,8 @@ if __name__ == "__main__":
                        help="Disable top-K filtering (CAFA-6: ≤1500 terms per protein)")
     parser.add_argument("--max-terms", type=int, default=1500,
                        help="Maximum terms per protein for top-K filtering (default: 1500)")
+    parser.add_argument("--use-testdata", action="store_true",
+                       help="Use data from testdata/ subdirectory")
     
     args = parser.parse_args()
     main(args)
