@@ -4,20 +4,22 @@
 This is a modular, CAFA-6 compliant implementation for protein function prediction. The system implements a baseline hybrid predictor combining protein language model embeddings with multi-ontology classification, IC-weighted evaluation, and ancestor closure.
 
 ## Architecture
-The project follows a 7-tier modular architecture:
+The project follows an 8-tier modular architecture:
 1. **Data Ingestion** (`data_ingest/`) - GO graph loading, label building, IA weights
 2. **Homology** (`homology/`) - DIAMOND sequence alignment and homology features
 3. **Zero-Shot** (`zero_shot/`) - GO term encoding with sentence transformers
-4. **Models** (`models/`) - Hybrid multi-ontology architecture with linear + zero-shot heads
-5. **Evaluation** (`evaluation/`) - IC-weighted maxF1 metrics and ancestor closure
-6. **Configuration** (`config/`) - Centralized configuration management
-7. **Orchestration** (`main.py`) - End-to-end training pipeline
+4. **Ensemble** (`ensemble/`) - Multi-pLM embedding fusion (ESM-2, ProtT5, Ankh)
+5. **Models** (`models/`) - Hybrid multi-ontology architecture with linear + zero-shot heads
+6. **Evaluation** (`evaluation/`) - IC-weighted maxF1 metrics and ancestor closure
+7. **Configuration** (`config/`) - Centralized configuration management
+8. **Orchestration** (`main.py`) - End-to-end training pipeline
 
 ## Key Design Decisions
 - **Ontology-specific heads**: Separate classifiers for MFO/BPO/CCO to handle different term distributions
 - **BCEWithLogitsLoss**: Proper multilabel loss with positive class weighting for imbalance
 - **Ancestor closure**: Applied after scoring, before thresholding (critical for CAFA metrics)
-- **Homology integration**: DIAMOND BLASTP + feature concatenation (1280 pLM + 128 homology = 1408-dim)
+- **Multi-pLM ensemble**: Flexible fusion of ESM-2 (1280-dim), ProtT5 (1024-dim), Ankh (768-dim) via concat/weighted-avg/attention/gated strategies
+- **Homology integration**: DIAMOND BLASTP + feature concatenation (3072 fused pLM + 128 homology = 3200-dim with 3-pLM ensemble)
 - **Zero-shot learning**: Bilinear matching between protein embeddings and GO term text embeddings (384-dim)
 - **Hybrid architecture**: Combines linear heads + zero-shot heads with alpha=0.5 weighting for best of both worlds
 - **Caching**: Aggressive caching of GO graph, labels, embeddings, DIAMOND database, alignments, and term embeddings
@@ -52,6 +54,16 @@ The project follows a 7-tier modular architecture:
 - CLI flags: --use-zero-shot, --use-hybrid
 - Model scales to 5.5M parameters in hybrid mode
 
+✅ **Phase 4 Complete** - Multi-pLM Ensemble
+- EmbeddingFusion module with 4 fusion strategies: concat, weighted-avg, attention, gated
+- Support for ESM-2 (1280-dim), ProtT5 (1024-dim), Ankh (768-dim)
+- Proper protein ID loading from disk (train_ids.npy, test_ids.npy) with demo fallback
+- 3-pLM ensemble produces 3072-dim fused embeddings (concat mode)
+- Combined with homology: 3200-dim total features (3072 + 128)
+- Model scales to 9.8M parameters with 3-pLM ensemble
+- CLI flags: --use-ensemble, --ensemble-plms esm2,prott5,ankh, --fusion-strategy concat
+- Full data alignment across embeddings, labels, and homology features
+
 ## Recent Changes (2025-10-29)
 **Phase 1 (Baseline):**
 - Created complete project structure with 5 core modules
@@ -78,11 +90,23 @@ The project follows a 7-tier modular architecture:
 - Tested hybrid mode successfully: 5.5M parameters, IC-weighted maxF1 = 1.0000
 - Fixed huggingface-hub version conflict (<1.0 required)
 
-## Next Steps (Phase 4+)
-- Multi-pLM ensemble (ESM-2 + ProtT5 + Ankh)
-- Hierarchical loss regularization (penalize ontology violations)
-- Species-aware cross-validation
-- Advanced homology transfer (weighted voting, propagation)
+**Phase 4 (Multi-pLM Ensemble):**
+- Created ensemble/ module with EmbeddingFusion class
+- Implemented 4 fusion strategies: concatenation, weighted averaging, attention-based, gated
+- Added EnsembleConfig to config/base.py with per-pLM settings (ESM-2, ProtT5, Ankh)
+- Extended load_ensemble_embeddings() to load real protein IDs from disk (critical bug fix)
+- Integrated with existing homology and zero-shot pipelines
+- Tested 3-pLM ensemble: 9.8M parameters, 3200-dim features, IC-weighted maxF1 = 1.0000
+- Verified data alignment across embeddings, labels, and homology features
+- Analyzed competitor approaches: label propagation, threshold optimization, top-K filtering common in winning solutions
+
+## Next Steps (Phase 5+)
+- Hierarchical loss regularization (penalize ontology violations during training)
+- Species-aware cross-validation (stratified by taxonomy)
+- Advanced homology transfer (weighted voting, GO term propagation)
+- Threshold optimization (grid search per ontology)
+- Top-K filtering (≤1500 terms per protein as per CAFA rules)
+- Label propagation optimization (tune ancestor closure parameters)
 - Calibration and uncertainty quantification
 - Production deployment configuration
 - Validation on realistic CAFA dataset split
@@ -114,6 +138,16 @@ python cafa6_predictor/main.py --demo --use-hybrid
 python cafa6_predictor/main.py --demo --use-zero-shot
 ```
 
+**Multi-pLM ensemble mode** (3 protein language models):
+```bash
+python cafa6_predictor/main.py --demo --use-ensemble --ensemble-plms esm2,prott5,ankh
+```
+
+**Custom fusion strategy** (attention-based):
+```bash
+python cafa6_predictor/main.py --demo --use-ensemble --fusion-strategy attention
+```
+
 **With real CAFA-6 data**:
 Place data files in `cafa6_predictor/data/` and run:
 ```bash
@@ -125,9 +159,13 @@ Required data files:
 - `train_terms.tsv` - Protein-GO term annotations
 - `train_sequences.fasta` - Protein sequences (for DIAMOND)
 - `IA.tsv` - Information Accretion weights
-- `train_embeddings.npy` - ESM-2 embeddings (1280-dim)
+- `train_embeddings.npy` - ESM-2 embeddings (1280-dim) [or train_embeddings_esm2.npy for ensemble]
+- `train_embeddings_prott5.npy` - ProtT5 embeddings (1024-dim) [optional, for ensemble]
+- `train_embeddings_ankh.npy` - Ankh embeddings (768-dim) [optional, for ensemble]
 - `train_ids.npy` - Protein IDs
-- `test_embeddings.npy` - Test embeddings
+- `test_embeddings.npy` - Test embeddings [or test_embeddings_esm2.npy for ensemble]
+- `test_embeddings_prott5.npy` - Test ProtT5 embeddings [optional, for ensemble]
+- `test_embeddings_ankh.npy` - Test Ankh embeddings [optional, for ensemble]
 - `test_ids.npy` - Test IDs
 
 ## Dependencies
