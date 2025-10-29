@@ -4,7 +4,7 @@ expertMode = true
 
 [nix]
 channel = "stable-25_05"
-packages = ["glibcLocales", "diamond"]
+packages = ["diamond", "glibcLocales", "pkg-config"]
 
 [workflows]
 runButton = "Project"
