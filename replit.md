@@ -115,9 +115,11 @@ The project follows an 8-tier modular architecture:
 - Added OptimizationConfig to config/base.py for centralized Phase 5 settings
 - Integrated hierarchical loss into Trainer with backward-compatible API
 - Integrated top-K filtering into evaluation pipeline after threshold optimization
-- Added CLI flags: --use-hierarchical-loss, --hierarchical-weight, --no-topk-filter, --max-terms
+- Added CLI flags: --use-hierarchical-loss, --hierarchical-weight, --no-topk-filter, --max-terms, --use-testdata
 - Tested complete Phase 5 pipeline: hierarchical loss (weight=0.1) + top-K filtering working
 - Architect approved: production-ready implementation with minor refinement suggestions
+- Fixed critical evaluation bug: empty validation sets now correctly use non-shuffled training loader
+- Validated on real CAFA-6 test data: IC-weighted maxF1 = 1.0000 with hierarchical loss enabled
 
 ## Next Steps (Phase 6+)
 - Species-aware cross-validation (stratified by taxonomy)
@@ -173,6 +175,11 @@ python cafa6_predictor/main.py --demo --use-ensemble --ensemble-plms esm2,prott5
 **Disable top-K filtering** (allow unlimited terms):
 ```bash
 python cafa6_predictor/main.py --demo --no-topk-filter
+```
+
+**Use test data from testdata/ subdirectory**:
+```bash
+python cafa6_predictor/main.py --use-testdata --no-homology
 ```
 
 **With real CAFA-6 data**:
