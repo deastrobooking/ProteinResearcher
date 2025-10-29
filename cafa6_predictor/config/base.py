@@ -85,10 +85,21 @@ class EnsembleConfig:
 
 
 @dataclass
+class OptimizationConfig:
+    """Phase 5: Advanced optimization configuration"""
+    use_topk_filter: bool = True
+    use_hierarchical_loss: bool = False
+    hierarchical_loss_weight: float = 0.1
+    
+    threshold_strategy: str = 'per_ontology'
+    fine_grained_search: bool = False
+    threshold_search_points: int = 99
+
+
+@dataclass
 class EvaluationConfig:
     """Evaluation and submission configuration"""
     max_terms_per_protein: int = 1500
-    threshold_search_points: int = 99
     threshold_min: float = 0.01
     threshold_max: float = 0.99
     
@@ -104,6 +115,7 @@ class Config:
     homology: HomologyConfig = field(default_factory=HomologyConfig)
     zero_shot: ZeroShotConfig = field(default_factory=ZeroShotConfig)
     ensemble: EnsembleConfig = field(default_factory=EnsembleConfig)
+    optimization: OptimizationConfig = field(default_factory=OptimizationConfig)
     evaluation: EvaluationConfig = field(default_factory=EvaluationConfig)
     
     ontologies: tuple = ('MFO', 'BPO', 'CCO')

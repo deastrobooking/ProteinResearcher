@@ -5,7 +5,7 @@ import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader
 from torchmetrics.classification import MultilabelF1Score
-from typing import Dict
+from typing import Dict, Optional
 import numpy as np
 from tqdm import tqdm
 
@@ -13,7 +13,8 @@ from tqdm import tqdm
 class Trainer:
     """Trainer for multi-ontology model"""
     
-    def __init__(self, model: nn.Module, config, pos_weights: Dict[str, np.ndarray], device: str = 'cpu'):
+    def __init__(self, model: nn.Module, config, pos_weights: Dict[str, np.ndarray], 
+                 device: str = 'cpu', hierarchical_losses: Optional[Dict[str, nn.Module]] = None):
         """
         Initialize trainer
         
@@ -22,17 +23,25 @@ class Trainer:
             config: Training configuration
             pos_weights: Dict mapping ontology to positive class weights
             device: Device to train on
+            hierarchical_losses: Optional dict of hierarchical loss modules per ontology
         """
         self.model = model.to(device)
         self.config = config
         self.device = device
+        self.use_hierarchical_loss = hierarchical_losses is not None
         
-        self.criterions = {
-            onto: nn.BCEWithLogitsLoss(
-                pos_weight=torch.tensor(pos_weights[onto], dtype=torch.float32).to(device)
-            )
-            for onto in ['MFO', 'BPO', 'CCO']
-        }
+        if self.use_hierarchical_loss:
+            self.criterions = hierarchical_losses
+            for onto in ['MFO', 'BPO', 'CCO']:
+                if onto in self.criterions:
+                    self.criterions[onto] = self.criterions[onto].to(device)
+        else:
+            self.criterions = {
+                onto: nn.BCEWithLogitsLoss(
+                    pos_weight=torch.tensor(pos_weights[onto], dtype=torch.float32).to(device)
+                )
+                for onto in ['MFO', 'BPO', 'CCO']
+            }
         
         self.optimizer = torch.optim.AdamW(
             model.parameters(),
@@ -74,10 +83,22 @@ class Trainer:
             
             outputs = self.model(embeddings)
             
-            loss = sum(
-                self.criterions[onto](outputs[onto], labels[onto])
-                for onto in ['MFO', 'BPO', 'CCO']
-            )
+            if self.use_hierarchical_loss:
+                # Hierarchical loss returns dict with 'total', 'bce', 'hierarchical'
+                loss_info = {}
+                total_loss = 0.0
+                for onto in ['MFO', 'BPO', 'CCO']:
+                    loss_dict = self.criterions[onto](outputs[onto], labels[onto])
+                    total_loss += loss_dict['total']
+                    if onto not in loss_info:
+                        loss_info[onto] = loss_dict
+                loss = total_loss
+            else:
+                # Standard BCE loss
+                loss = sum(
+                    self.criterions[onto](outputs[onto], labels[onto])
+                    for onto in ['MFO', 'BPO', 'CCO']
+                )
             
             loss.backward()
             

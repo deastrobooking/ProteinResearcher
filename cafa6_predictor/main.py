@@ -9,11 +9,11 @@ import argparse
 
 from config.base import Config
 from data_ingest import GOGraphLoader, LabelBuilder, IAWeightLoader
-from models import build_model
+from models import build_model, HierarchicalBCELoss
 from models.hybrid_model import build_hybrid_model
 from models.dataset import CAFA6Dataset
 from models.trainer import Trainer
-from evaluation import AncestorClosure, evaluate_predictions, SubmissionWriter
+from evaluation import AncestorClosure, evaluate_predictions, SubmissionWriter, apply_cafa_submission_filters, count_predictions_per_protein
 from homology import DiamondRunner, HomologyFeatureExtractor
 from zero_shot import GOTermEncoder
 from ensemble import EmbeddingFusion, load_multi_embeddings
@@ -254,6 +254,18 @@ def main(args):
         print(f"✓ Multi-pLM ensemble enabled: {', '.join(enabled)}")
         print(f"  Fusion strategy: {config.ensemble.fusion_strategy}")
     
+    # Phase 5: Advanced optimization configuration
+    if args.use_hierarchical_loss:
+        config.optimization.use_hierarchical_loss = True
+        config.optimization.hierarchical_loss_weight = args.hierarchical_weight
+        print(f"✓ Hierarchical consistency loss enabled (weight={args.hierarchical_weight})")
+    
+    if args.no_topk_filter:
+        config.optimization.use_topk_filter = False
+        print("⚠ Top-K filtering disabled")
+    
+    config.evaluation.max_terms_per_protein = args.max_terms
+    
     if args.demo:
         create_dummy_data(config)
     
@@ -403,7 +415,39 @@ def main(args):
     
     print("\nTraining")
     pos_weights = label_builder.compute_pos_weights()
-    trainer = Trainer(model, config.model, pos_weights, config.model.device)
+    
+    # Phase 5: Create hierarchical losses if enabled
+    hierarchical_losses = None
+    if config.optimization.use_hierarchical_loss:
+        print(f"Creating hierarchical consistency losses...")
+        hierarchical_losses = {}
+        for onto in ['MFO', 'BPO', 'CCO']:
+            # Build ancestor indices from GO graph
+            ancestor_indices = {}
+            term_to_idx = {term: idx for idx, term in enumerate(go_loader.ontology_terms[onto])}
+            
+            for term_id, idx in term_to_idx.items():
+                if term_id not in go_loader.graph:
+                    continue
+                ancestors = set()
+                try:
+                    for ancestor_id in go_loader.graph.predecessors(term_id):
+                        if ancestor_id in term_to_idx:
+                            ancestors.add(term_to_idx[ancestor_id])
+                except:
+                    pass
+                if ancestors:
+                    ancestor_indices[idx] = ancestors
+            
+            pos_weight_tensor = torch.tensor(pos_weights[onto], dtype=torch.float32)
+            hierarchical_losses[onto] = HierarchicalBCELoss(
+                ancestor_indices=ancestor_indices,
+                pos_weight=pos_weight_tensor,
+                hierarchical_weight=config.optimization.hierarchical_loss_weight
+            )
+        print(f"✓ Hierarchical losses created for all ontologies")
+    
+    trainer = Trainer(model, config.model, pos_weights, config.model.device, hierarchical_losses)
     
     best_val_f1 = 0.0
     
@@ -448,7 +492,7 @@ def main(args):
     threshold_range = np.linspace(
         config.evaluation.threshold_min,
         config.evaluation.threshold_max,
-        config.evaluation.threshold_search_points
+        config.optimization.threshold_search_points
     )
     
     results = evaluate_predictions(
@@ -459,9 +503,32 @@ def main(args):
         threshold_range
     )
     
+    # Phase 5: Apply top-K filtering if enabled
+    if config.optimization.use_topk_filter:
+        print(f"\nApplying Top-K filtering (max {config.evaluation.max_terms_per_protein} terms per protein)...")
+        thresholds = {onto: results[onto]['best_threshold'] for onto in ['MFO', 'BPO', 'CCO']}
+        filtered_predictions = apply_cafa_submission_filters(
+            eval_predictions,
+            thresholds,
+            max_terms_per_protein=config.evaluation.max_terms_per_protein,
+            use_topk=True
+        )
+        
+        # Count predictions per protein
+        stats = count_predictions_per_protein(filtered_predictions)
+        print(f"✓ Filtered predictions:")
+        print(f"  Max terms per protein: {stats['max_count']}")
+        print(f"  Mean terms per protein: {stats['mean_count']:.1f}")
+        if stats['exceeds_limit'] > 0:
+            print(f"  ⚠ {stats['exceeds_limit']} proteins exceed {config.evaluation.max_terms_per_protein} term limit")
+    
     print("\n" + "="*80)
     print("TRAINING COMPLETE")
     print(f"Best Mean IC-weighted F1: {results['mean']['max_f1']:.4f}")
+    if config.optimization.use_hierarchical_loss:
+        print(f"  Hierarchical loss enabled (weight={config.optimization.hierarchical_loss_weight})")
+    if config.optimization.use_topk_filter:
+        print(f"  Top-K filtering enabled (max={config.evaluation.max_terms_per_protein} terms/protein)")
     print("="*80)
     
     return results
@@ -482,6 +549,16 @@ if __name__ == "__main__":
                        help="Ensemble fusion strategy (default: concat)")
     parser.add_argument("--ensemble-plms", type=str, default=None,
                        help="Comma-separated list of pLMs to use (e.g., 'esm2,prott5,ankh')")
+    
+    # Phase 5: Advanced optimization flags
+    parser.add_argument("--use-hierarchical-loss", action="store_true", 
+                       help="Enable hierarchical consistency loss during training")
+    parser.add_argument("--hierarchical-weight", type=float, default=0.1,
+                       help="Weight for hierarchical loss regularization (default: 0.1)")
+    parser.add_argument("--no-topk-filter", action="store_true",
+                       help="Disable top-K filtering (CAFA-6: ≤1500 terms per protein)")
+    parser.add_argument("--max-terms", type=int, default=1500,
+                       help="Maximum terms per protein for top-K filtering (default: 1500)")
     
     args = parser.parse_args()
     main(args)

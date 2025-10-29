@@ -18,6 +18,10 @@ author = "agent"
 task = "workflow.run"
 args = "CAFA-6 Ensemble Demo"
 
+[[workflows.workflow.tasks]]
+task = "workflow.run"
+args = "CAFA-6 Phase5 Demo"
+
 [[workflows.workflow]]
 name = "CAFA-6 Ensemble Demo"
 author = "agent"
@@ -25,6 +29,17 @@ author = "agent"
 [[workflows.workflow.tasks]]
 task = "shell.exec"
 args = "python cafa6_predictor/main.py --demo --use-ensemble --ensemble-plms esm2,prott5,ankh"
+
+[workflows.workflow.metadata]
+outputType = "console"
+
+[[workflows.workflow]]
+name = "CAFA-6 Phase5 Demo"
+author = "agent"
+
+[[workflows.workflow.tasks]]
+task = "shell.exec"
+args = "python cafa6_predictor/main.py --demo --use-ensemble --ensemble-plms esm2,prott5,ankh --use-hierarchical-loss --hierarchical-weight 0.1"
 
 [workflows.workflow.metadata]
 outputType = "console"
