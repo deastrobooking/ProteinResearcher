@@ -1,0 +1,156 @@
+Here’s a proposed expansion plan and code skeleton for the Phase 2 features—homology integration and zero-shot GO term encoding—designed to integrate cleanly into your existing CAFA-6 compliant framework.
+
+***
+
+### Phase 2 Folder Tree Expansion
+
+```
+cafa6_predictor/
+├── homology/                 # New module for sequence similarity features
+│   ├── diamond_runner.py     # Wrapper for DIAMOND BLAST searches
+│   ├── feature_extractor.py  # Generate homology embeddings/scores
+│   └── merge_features.py     # Combine with pLM embeddings
+├── zero_shot/                # Zero-shot GO term encoding
+│   ├── term_encoder.py       # Transformer-based text encoder for GO terms
+│   ├── similarity_scorer.py  # Compute cosine similarities between proteins and terms
+│   └── zero_shot_model.py    # Unified model integrating pLM + term embeddings
+├── config/
+│   └── phase2.py             # Extended config with homology and zero-shot options
+└── main_phase2.py            # Entry point for combined hybrid model training
+```
+
+***
+
+### Homology Integration Skeleton
+
+```python
+# homology/diamond_runner.py
+import subprocess
+from pathlib import Path
+
+class DiamondRunner:
+    def __init__(self, db_path, query_path, output_path, threads=8):
+        self.db_path = Path(db_path)
+        self.query_path = Path(query_path)
+        self.output_path = Path(output_path)
+        self.threads = threads
+
+    def run(self):
+        cmd = [
+            "diamond", "blastp",
+            "--db", str(self.db_path),
+            "--query", str(self.query_path),
+            "--out", str(self.output_path),
+            "--outfmt", "6 qseqid sseqid bitscore evalue",
+            "--max-target-seqs", "10",
+            "--threads", str(self.threads)
+        ]
+        subprocess.run(cmd, check=True)
+```
+
+```python
+# homology/feature_extractor.py
+import pandas as pd
+import numpy as np
+
+class HomologyFeatureExtractor:
+    def __init__(self, diamond_output_path, score_method="bitscore"):
+        self.diamond_output_path = diamond_output_path
+        self.score_method = score_method
+
+    def load_scores(self):
+        df = pd.read_csv(self.diamond_output_path, sep='\t', names=["qseqid", "sseqid", "bitscore", "evalue"])
+        agg = df.groupby("qseqid")[self.score_method].mean()
+        return agg
+```
+
+```python
+# homology/merge_features.py
+import numpy as np
+
+def merge_features(embeddings, homology_scores):
+    merged = np.concatenate([embeddings, homology_scores.reshape(-1, 1)], axis=1)
+    return merged
+```
+
+***
+
+### Zero-Shot GO Encoder Skeleton
+
+```python
+# zero_shot/term_encoder.py
+from transformers import AutoTokenizer, AutoModel
+import torch
+
+class GOTermEncoder:
+    def __init__(self, model_name="sentence-transformers/all-MiniLM-L6-v2"):
+        self.tokenizer = AutoTokenizer.from_pretrained(model_name)
+        self.model = AutoModel.from_pretrained(model_name)
+
+    def encode_terms(self, terms):
+        inputs = self.tokenizer(terms, padding=True, truncation=True, return_tensors="pt")
+        with torch.no_grad():
+            outputs = self.model(**inputs)
+        return outputs.last_hidden_state.mean(dim=1)
+```
+
+```python
+# zero_shot/similarity_scorer.py
+import torch
+import torch.nn.functional as F
+
+def compute_similarity(protein_embeddings, term_embeddings):
+    protein_norm = F.normalize(protein_embeddings, p=2, dim=1)
+    term_norm = F.normalize(term_embeddings, p=2, dim=1)
+    return torch.matmul(protein_norm, term_norm.T)
+```
+
+```python
+# zero_shot/zero_shot_model.py
+import torch
+
+class ZeroShotModel(torch.nn.Module):
+    def __init__(self, embedding_dim, term_embedding_dim):
+        super().__init__()
+        self.protein_proj = torch.nn.Linear(embedding_dim, term_embedding_dim)
+
+    def forward(self, protein_embeddings, term_embeddings):
+        projected = self.protein_proj(protein_embeddings)
+        scores = torch.matmul(projected, term_embeddings.T)
+        return scores
+```
+
+***
+
+### Integration Entry Point
+
+```python
+# main_phase2.py
+from homology.merge_features import merge_features
+from zero_shot.term_encoder import GOTermEncoder
+from zero_shot.similarity_scorer import compute_similarity
+from models.multionto_model import build_model
+
+def run_phase2_pipeline(config):
+    # Step 1: Load embeddings and homology data
+    embeddings = load_embeddings(config.data.train_embeddings)
+    homology_scores = load_homology(config.homology.output_path)
+    merged_features = merge_features(embeddings, homology_scores)
+
+    # Step 2: Encode GO terms for zero-shot scoring
+    encoder = GOTermEncoder(config.zero_shot.model_name)
+    term_embeddings = encoder.encode_terms(go_loader.ontology_terms)
+
+    # Step 3: Train hybrid predictor
+    model = build_model(go_loader, config.model)
+    trainer = Trainer(model, merged_features, labels)
+    trainer.train()
+
+    # Step 4: Evaluate zero-shot compatibility
+    zs_scores = compute_similarity(torch.tensor(embeddings), term_embeddings)
+    print("Zero-shot evaluation complete.")
+```
+
+***
+
+Would you like me to include a merged training configuration example (`phase2.py`) that defines both homology and zero-shot components with tunable hyperparameters?
