@@ -7,7 +7,7 @@ channel = "stable-25_05"
 packages = ["diamond", "glibcLocales", "pkg-config"]
 
 [workflows]
-runButton = "CAFA-6 Test Data Run"
+runButton = "CAFA-6 Real Data Run"
 
 [[workflows.workflow]]
 name = "Project"
@@ -61,3 +61,30 @@ mode = "sequential"
 [[workflows.workflow.tasks]]
 task = "shell.exec"
 args = "python cafa6_predictor/main.py --use-testdata --no-homology --use-ensemble --ensemble-plms esm2,prott5,ankh --use-hierarchical-loss --hierarchical-weight 0.1"
+
+[[workflows.workflow]]
+name = "CAFA-6 Real Data Run"
+author = 8097281
+mode = "sequential"
+
+[[workflows.workflow.tasks]]
+task = "shell.exec"
+args = "python cafa6_predictor/main.py --no-homology"
+
+[[workflows.workflow]]
+name = "CAFA-6 Full Pipeline (Real Data)"
+author = 8097281
+mode = "sequential"
+
+[[workflows.workflow.tasks]]
+task = "shell.exec"
+args = "python cafa6_predictor/main.py"
+
+[[workflows.workflow]]
+name = "CAFA-6 Ensemble (Real Data)"
+author = 8097281
+mode = "sequential"
+
+[[workflows.workflow.tasks]]
+task = "shell.exec"
+args = "python cafa6_predictor/main.py --no-homology --use-ensemble --ensemble-plms esm2,prott5,ankh --use-hierarchical-loss --hierarchical-weight 0.1"
