@@ -74,6 +74,16 @@ The project follows an 8-tier modular architecture:
 - Verified: hierarchical loss + top-K filtering + threshold optimization all working correctly
 
 ## Recent Changes (2025-10-29)
+
+**First CAFA-6 Submission (Public Score: 0.000):**
+- Successfully uploaded submission.tsv to CAFA-6 competition
+- **Issue**: Used demo/test data (--use-testdata flag) with synthetic IDs T00000-T00019
+- **Expected**: Real CAFA-6 protein IDs (A0A0C5B5G6, etc.) for ~10,000 test proteins
+- **Fix Applied**: Added validation warning when demo IDs detected in submission writer
+- **Documentation Updated**: Clarified --use-testdata is for demos only, not competition
+- **Next Step**: Generate submission with real CAFA-6 data (remove --use-testdata flag)
+
+## Project History (2025-10-29)
 **Phase 1 (Baseline):**
 - Created complete project structure with 5 core modules
 - Implemented all baseline components (GO loader, labels, model, evaluation)
