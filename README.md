@@ -131,27 +131,92 @@ python cafa6_predictor/main.py --demo --use-ensemble \
 
 ### With Real CAFA-6 Data
 
-#### 1. Prepare Data Files
+#### 1. Download CAFA-6 Data
 
-Place the following files in `cafa6_predictor/data/`:
+Download competition data from Kaggle:
 
-**Required:**
+```bash
+# Install Kaggle CLI (if not already installed)
+pip install kaggle
+
+# Download competition files
+mkdir -p cafa6_predictor/data
+cd cafa6_predictor/data
+kaggle competitions download -c cafa-6-protein-function-prediction
+unzip cafa-6-protein-function-prediction.zip
+cd ../..
+```
+
+**Required files from competition:**
 - `go-basic.obo` - GO ontology graph (2025-06-01 release)
 - `train_terms.tsv` - Tab-separated: `protein_id \t GO_term \t ontology`
 - `IA.tsv` - Tab-separated: `GO_term \t weight`
-- `train_embeddings.npy` - Protein embeddings (1280-dim for ESM-2)
-- `train_ids.npy` - Protein IDs (numpy array)
-- `test_embeddings.npy` - Test set embeddings
-- `test_ids.npy` - Test set IDs
-
-**Optional (for advanced features):**
-- `train_sequences.fasta` - Protein sequences (for DIAMOND homology)
-- `train_embeddings_prott5.npy` - ProtT5 embeddings (1024-dim)
-- `train_embeddings_ankh.npy` - Ankh embeddings (768-dim)
-- `test_embeddings_prott5.npy` - Test ProtT5 embeddings
-- `test_embeddings_ankh.npy` - Test Ankh embeddings
+- `train_sequences.fasta` - Training protein sequences
+- `testsuperset.fasta` - Test protein sequences
 
 **⚠️ Important:** Ensure TSV files use proper **tab delimiters**, not spaces!
+
+#### 2. Extract Protein Embeddings
+
+**Option A: Automated Setup (Recommended)**
+
+Run the setup script to download data and extract ESM-2 embeddings:
+
+```bash
+chmod +x setup_cafa6_data.sh
+./setup_cafa6_data.sh
+```
+
+This will:
+1. Download CAFA-6 data from Kaggle
+2. Install required dependencies
+3. Extract ESM-2 embeddings for train/test sets
+4. Optionally extract ProtT5 and Ankh embeddings
+
+**Option B: Manual Extraction**
+
+Extract embeddings using the dedicated script:
+
+```bash
+# Install dependencies
+pip install transformers sentencepiece biopython
+
+# Extract ESM-2 embeddings (train set)
+python cafa6_predictor/extract_embeddings.py \
+    --input cafa6_predictor/data/train_sequences.fasta \
+    --output-dir cafa6_predictor/data \
+    --models esm2 \
+    --split train \
+    --batch-size 4
+
+# Extract ESM-2 embeddings (test set)
+python cafa6_predictor/extract_embeddings.py \
+    --input cafa6_predictor/data/testsuperset.fasta \
+    --output-dir cafa6_predictor/data \
+    --models esm2 \
+    --split test \
+    --batch-size 4
+
+# Optional: Extract ProtT5 and Ankh for stronger ensemble
+python cafa6_predictor/extract_embeddings.py \
+    --input cafa6_predictor/data/train_sequences.fasta \
+    --output-dir cafa6_predictor/data \
+    --models prott5,ankh \
+    --split train \
+    --batch-size 2
+```
+
+**Generated files:**
+- `train_embeddings.npy` - ESM-2 embeddings (1280-dim)
+- `train_ids.npy` - Protein IDs (numpy array)
+- `test_embeddings.npy` - Test set ESM-2 embeddings
+- `test_ids.npy` - Test set IDs
+- `train_embeddings_prott5.npy` - ProtT5 embeddings (1024-dim) [optional]
+- `train_embeddings_ankh.npy` - Ankh embeddings (768-dim) [optional]
+- `test_embeddings_prott5.npy` - Test ProtT5 embeddings [optional]
+- `test_embeddings_ankh.npy` - Test Ankh embeddings [optional]
+
+**⚠️ GPU Recommended:** Embedding extraction is much faster on GPU. Expect ~2-4 hours for full CAFA-6 dataset on GPU, longer on CPU.
 
 #### 2. Run Experiments
 

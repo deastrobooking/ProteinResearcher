@@ -18,22 +18,61 @@ python cafa6_predictor/main.py --use-testdata --no-homology
 
 ## ✅ Solution: Run with Real CAFA-6 Data
 
-### Step 1: Prepare Real CAFA-6 Data
-Place these files in `cafa6_predictor/data/` (NOT in testdata/):
+### Step 1: Download and Prepare CAFA-6 Data
 
-**Required Files:**
-- `go-basic.obo` - GO ontology
-- `train_terms.tsv` - Training annotations (tab-separated!)
-- `IA.tsv` - Information Accretion weights (tab-separated!)
-- `train_embeddings.npy` - ESM-2 embeddings for training proteins
+**Quick Start (Automated):**
+```bash
+chmod +x setup_cafa6_data.sh
+./setup_cafa6_data.sh
+```
+
+**Manual Setup:**
+
+1. **Download competition data:**
+```bash
+pip install kaggle
+mkdir -p cafa6_predictor/data
+cd cafa6_predictor/data
+kaggle competitions download -c cafa-6-protein-function-prediction
+unzip cafa-6-protein-function-prediction.zip
+cd ../..
+```
+
+2. **Extract embeddings:**
+```bash
+# Install dependencies
+pip install transformers sentencepiece biopython
+
+# Extract ESM-2 (required)
+python cafa6_predictor/extract_embeddings.py \
+    --input cafa6_predictor/data/train_sequences.fasta \
+    --models esm2 \
+    --split train
+
+python cafa6_predictor/extract_embeddings.py \
+    --input cafa6_predictor/data/testsuperset.fasta \
+    --models esm2 \
+    --split test
+
+# Extract ProtT5 + Ankh (optional, for better performance)
+python cafa6_predictor/extract_embeddings.py \
+    --input cafa6_predictor/data/train_sequences.fasta \
+    --models prott5,ankh \
+    --split train
+
+python cafa6_predictor/extract_embeddings.py \
+    --input cafa6_predictor/data/testsuperset.fasta \
+    --models prott5,ankh \
+    --split test
+```
+
+**Files Generated:**
+- `train_embeddings.npy` - ESM-2 embeddings
 - `train_ids.npy` - Training protein IDs
 - `test_embeddings.npy` - Test embeddings (~10,000 proteins)
-- `test_ids.npy` - Test protein IDs (should match sample_submission.tsv)
-
-**Optional (for better performance):**
-- `train_sequences.fasta` - For DIAMOND homology search
-- `train_embeddings_prott5.npy` - ProtT5 embeddings (1024-dim)
-- `train_embeddings_ankh.npy` - Ankh embeddings (768-dim)
+- `test_ids.npy` - Test protein IDs
+- `train_embeddings_prott5.npy`, `train_embeddings_ankh.npy` [optional]
+- `test_embeddings_prott5.npy`, `test_embeddings_ankh.npy` [optional]
 
 ### Step 2: Run Training on Real Data
 
