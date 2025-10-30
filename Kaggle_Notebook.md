@@ -51,8 +51,14 @@ TRAIN_FASTA = COMP_DIR / "train_sequences.fasta"
 TEST_FASTA = COMP_DIR / "testsuperset.fasta"
 TRAIN_TERMS = COMP_DIR / "Train" / "train_terms.tsv"
 GO_OBO = COMP_DIR / "Train" / "go-basic.obo"
-IA_WEIGHTS = COMP_DIR / "IA.txt"
+IA_WEIGHTS = COMP_DIR / "IA.tsv"  # Fixed: was IA.txt
 SAMPLE_SUB = COMP_DIR / "sample_submission.tsv"
+
+# Verify files exist
+print(f"  GO ontology: {GO_OBO.exists()}")
+print(f"  Train terms: {TRAIN_TERMS.exists()}")
+print(f"  IA weights: {IA_WEIGHTS.exists()}")
+print(f"  Sample submission: {SAMPLE_SUB.exists()}")
 
 # Pre-computed embeddings (if attached as dataset)
 PRECOMP_DIR = Path("/kaggle/input/cafa6-embeddings")  # Adjust to your dataset name
@@ -157,8 +163,16 @@ go_graph, ontology_terms = load_go_ontology(GO_OBO)
 def build_labels(terms_tsv: Path, ontology_terms: Dict):
     """Build binary label matrices from train_terms.tsv"""
     print("Building labels...")
+    
+    # Check if file exists
+    if not terms_tsv.exists():
+        raise FileNotFoundError(f"Train terms file not found: {terms_tsv}")
+    
+    # Read with explicit tab separator
     df = pd.read_csv(terms_tsv, sep='\t', header=None, 
                      names=['protein_id', 'term', 'ontology'])
+    
+    print(f"  Loaded {len(df)} annotations for {df['protein_id'].nunique()} proteins")
     
     protein_ids = sorted(df['protein_id'].unique())
     labels = {}
@@ -447,6 +461,51 @@ else:
     print("✓ All required proteins present")
 
 print("\n🎉 Submission ready! Click 'Save Version' to submit.")
+```
+
+---
+
+## 🔧 Troubleshooting Common Kaggle Errors
+
+### Error: FileNotFoundError: IA.txt
+
+**Problem:** Kaggle competition file is named `IA.tsv` not `IA.txt`
+
+**Solution:** Already fixed in CONFIG section (line 54). If you see this error, update:
+```python
+IA_WEIGHTS = COMP_DIR / "IA.tsv"  # NOT IA.txt
+```
+
+### Error: 0 annotations loaded
+
+**Problem:** `train_terms.tsv` not found or wrong path
+
+**Common causes:**
+1. File is in subdirectory: `COMP_DIR / "Train" / "train_terms.tsv"`
+2. File delimiter is wrong (spaces instead of tabs)
+3. Competition data not attached
+
+**Solution:** Check file existence in CONFIG section and verify path
+
+### Error: Missing proteins in submission
+
+**Problem:** Embedding IDs don't match test set IDs
+
+**Solution:** 
+```python
+# Verify ID alignment
+print(f"Train embedding IDs: {train_ids[:5]}")
+print(f"Test embedding IDs: {test_ids[:5]}")
+sample_df = pd.read_csv(SAMPLE_SUB, sep='\t')
+print(f"Expected test IDs: {sample_df.iloc[:5, 0].tolist()}")
+```
+
+### Performance: Out of GPU memory
+
+**Solution:**
+```python
+BATCH_SIZE = 4  # Reduce from 8
+# Or use gradient accumulation
 ```
 
 ---
