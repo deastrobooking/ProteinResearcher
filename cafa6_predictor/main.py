@@ -227,6 +227,18 @@ def main(args):
     config.model.device = args.device if args.device else ('cuda' if torch.cuda.is_available() else 'cpu')
     print(f"\nDevice: {config.model.device}")
     
+    if torch.cuda.is_available():
+        print(f"GPU: {torch.cuda.get_device_name(0)}")
+        print(f"GPU Memory: {torch.cuda.get_device_properties(0).total_memory / 1024**3:.2f} GB")
+        # Enable memory optimizations
+        torch.backends.cudnn.benchmark = True
+        torch.cuda.empty_cache()
+        # Optimize batch size for GPU
+        config.model.optimize_batch_size('cuda')
+        print(f"Optimized batch size for GPU: {config.model.batch_size}")
+    else:
+        print("⚠️ GPU not available. Consider upgrading to Replit Core for GPU access.")
+    
     # Update paths if using testdata directory
     if args.use_testdata:
         testdata_dir = Path("cafa6_predictor/data/testdata")
@@ -414,10 +426,14 @@ def main(args):
     train_dataset = Subset(dataset, train_indices)
     val_dataset = Subset(dataset, val_indices)
     
+    # Use multiple workers for GPU training
+    num_workers = 4 if config.model.device == 'cuda' else 0
+    pin_memory = config.model.device == 'cuda'
+    
     train_loader = DataLoader(train_dataset, batch_size=config.model.batch_size, 
-                              shuffle=True, num_workers=0)
+                              shuffle=True, num_workers=num_workers, pin_memory=pin_memory)
     val_loader = DataLoader(val_dataset, batch_size=config.model.batch_size, 
-                           shuffle=False, num_workers=0)
+                           shuffle=False, num_workers=num_workers, pin_memory=pin_memory)
     
     print(f"  Train: {len(train_dataset)} samples")
     print(f"  Val: {len(val_dataset)} samples")

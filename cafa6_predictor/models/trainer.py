@@ -8,6 +8,7 @@ from torchmetrics.classification import MultilabelF1Score
 from typing import Dict, Optional
 import numpy as np
 from tqdm import tqdm
+from torch.cuda.amp import autocast, GradScaler
 
 
 class Trainer:
@@ -49,6 +50,10 @@ class Trainer:
             weight_decay=config.weight_decay
         )
         
+        # Enable mixed precision training for GPU
+        self.use_amp = device == 'cuda'
+        self.scaler = GradScaler() if self.use_amp else None
+        
         self.metrics = {
             onto: MultilabelF1Score(
                 num_labels=model.ontology_sizes[onto],
@@ -81,31 +86,58 @@ class Trainer:
             
             self.optimizer.zero_grad()
             
-            outputs = self.model(embeddings)
-            
-            if self.use_hierarchical_loss:
-                # Hierarchical loss returns dict with 'total', 'bce', 'hierarchical'
-                loss_info = {}
-                total_loss = 0.0
-                for onto in ['MFO', 'BPO', 'CCO']:
-                    loss_dict = self.criterions[onto](outputs[onto], labels[onto])
-                    total_loss += loss_dict['total']
-                    if onto not in loss_info:
-                        loss_info[onto] = loss_dict
-                loss = total_loss
+            # Mixed precision training
+            if self.use_amp:
+                with autocast():
+                    outputs = self.model(embeddings)
+                    
+                    if self.use_hierarchical_loss:
+                        loss_info = {}
+                        total_loss = 0.0
+                        for onto in ['MFO', 'BPO', 'CCO']:
+                            loss_dict = self.criterions[onto](outputs[onto], labels[onto])
+                            total_loss += loss_dict['total']
+                            if onto not in loss_info:
+                                loss_info[onto] = loss_dict
+                        loss = total_loss
+                    else:
+                        loss = sum(
+                            self.criterions[onto](outputs[onto], labels[onto])
+                            for onto in ['MFO', 'BPO', 'CCO']
+                        )
+                
+                self.scaler.scale(loss).backward()
+                
+                if self.config.gradient_clip > 0:
+                    self.scaler.unscale_(self.optimizer)
+                    nn.utils.clip_grad_norm_(self.model.parameters(), self.config.gradient_clip)
+                
+                self.scaler.step(self.optimizer)
+                self.scaler.update()
             else:
-                # Standard BCE loss
-                loss = sum(
-                    self.criterions[onto](outputs[onto], labels[onto])
-                    for onto in ['MFO', 'BPO', 'CCO']
-                )
-            
-            loss.backward()
-            
-            if self.config.gradient_clip > 0:
-                nn.utils.clip_grad_norm_(self.model.parameters(), self.config.gradient_clip)
-            
-            self.optimizer.step()
+                outputs = self.model(embeddings)
+                
+                if self.use_hierarchical_loss:
+                    loss_info = {}
+                    total_loss = 0.0
+                    for onto in ['MFO', 'BPO', 'CCO']:
+                        loss_dict = self.criterions[onto](outputs[onto], labels[onto])
+                        total_loss += loss_dict['total']
+                        if onto not in loss_info:
+                            loss_info[onto] = loss_dict
+                    loss = total_loss
+                else:
+                    loss = sum(
+                        self.criterions[onto](outputs[onto], labels[onto])
+                        for onto in ['MFO', 'BPO', 'CCO']
+                    )
+                
+                loss.backward()
+                
+                if self.config.gradient_clip > 0:
+                    nn.utils.clip_grad_norm_(self.model.parameters(), self.config.gradient_clip)
+                
+                self.optimizer.step()
             
             total_loss += loss.item()
             
