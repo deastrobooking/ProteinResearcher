@@ -7,7 +7,7 @@ channel = "stable-25_05"
 packages = ["diamond", "glibcLocales", "pkg-config"]
 
 [workflows]
-runButton = "CAFA-6 Full Ensemble + Export CSV"
+runButton = "Setup CAFA-6 Data & Embeddings"
 
 [[workflows.workflow]]
 name = "Project"
@@ -101,3 +101,12 @@ mode = "sequential"
 [[workflows.workflow.tasks]]
 task = "shell.exec"
 args = "python cafa6_predictor/main.py --no-homology --use-ensemble --ensemble-plms esm2,prott5,ankh --use-hierarchical-loss --hierarchical-weight 0.1"
+
+[[workflows.workflow]]
+name = "Setup CAFA-6 Data & Embeddings"
+author = 8097281
+mode = "sequential"
+
+[[workflows.workflow.tasks]]
+task = "shell.exec"
+args = "bash setup_cafa6_data.sh"
