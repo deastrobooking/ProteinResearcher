@@ -1,0 +1,390 @@
+Awesome — here’s a clean **Kaggle Notebook skeleton** you can paste in and run. It’s production-lean but flexible: it (1) mounts inputs, (2) optionally **builds ESM-2 embeddings** from FASTA, (3) trains a tiny head **if labels are present**, and (4) always emits a valid `submission.tsv`. Everything is toggled by a few flags at the top.
+
+> Tip: Create two notebook **versions**—one with Internet **On** (to `%pip install fair-esm` and generate embeddings), then turn Internet **Off** for your final scoring run, attaching the embeddings as a Dataset.
+
+---
+
+```markdown
+# CAFA-6 Starter: FASTA → (optional ESM-2 embeddings) → Simple Head → `submission.tsv`
+
+This notebook:
+- Reads competition files under `/kaggle/input/cafa-6-protein-function-prediction/`
+- Optionally generates **ESM-2** embeddings (33rd layer, mean-pooled)
+- If training labels exist, fits a tiny MLP head; otherwise falls back to a simple scoring baseline
+- Writes `submission.tsv` to `/kaggle/working/` ready for “Save Version”
+
+```
+
+```python
+# =========================
+# 0) CONFIG & SETUP
+# =========================
+import os, sys, math, random, json, gc, glob, pathlib, time
+from pathlib import Path
+
+INTERNET_ENABLED = False   # Set True to %pip install fair-esm and build embeddings in-notebook
+BUILD_ESM2_EMBEDS = False  # True to generate ESM-2 embeddings for all FASTA sequences (requires INTERNET_ENABLED=True)
+USE_PRECOMPUTED_EMBEDS = True  # True to load embeddings you've attached as a Dataset (recommended after first run)
+EMB_DIM = 1280             # ESM2_t33_650M mean pooled size
+BATCH_SIZE = 8
+
+# Paths (competition slug may differ; inspect /kaggle/input to confirm)
+COMP_DIR = Path("/kaggle/input/cafa-6-protein-function-prediction")
+WORK_DIR = Path("/kaggle/working")
+EMB_DIR  = WORK_DIR / "esm2_npy"          # where we write new embeddings
+PRECOMP_EMB_DIR = Path("/kaggle/input/my-cafa6-embeddings/esm2_npy")  # change to your attached Dataset path
+
+# File names in competition package (adjust if needed)
+TRAIN_FASTA = COMP_DIR / "train.fasta"              # if provided
+TARGET_FASTA = COMP_DIR / "test.fasta"              # or "targets.fasta" depending on the release
+SAMPLE_SUB = COMP_DIR / "sample_submission.tsv"     # expected name from competition
+TRAIN_LABELS = COMP_DIR / "train_labels.tsv"        # if provided (protein_id, go_id) one per row
+
+# Repro
+import numpy as np
+def seed_all(s=1337):
+    random.seed(s); np.random.seed(s)
+try:
+    import torch
+    def _torch_seed(s): 
+        torch.manual_seed(s); torch.cuda.manual_seed_all(s)
+        torch.backends.cudnn.deterministic = True
+        torch.backends.cudnn.benchmark = False
+    _torch_seed(1337)
+except Exception:
+    pass
+seed_all(1337)
+
+print("COMP_DIR exists:", COMP_DIR.exists())
+print("Files found under /kaggle/input:")
+os.system("find /kaggle/input -maxdepth 2 -type f | head -n 30")
+```
+
+```python
+# =========================
+# 1) DEPENDENCIES
+# =========================
+# Minimal deps: pandas, biopython, tqdm, torch (preinstalled on Kaggle GPU images)
+if INTERNET_ENABLED and BUILD_ESM2_EMBEDS:
+    # If internet is on: install fair-esm
+    %pip -q install fair-esm
+
+import pandas as pd
+from tqdm.auto import tqdm
+
+# BioPython for FASTA
+try:
+    from Bio import SeqIO
+except Exception:
+    %pip -q install biopython
+    from Bio import SeqIO
+```
+
+```python
+# =========================
+# 2) IO HELPERS
+# =========================
+def read_fasta_ids_and_seqs(path: Path):
+    recs = list(SeqIO.parse(str(path), "fasta"))
+    ids  = [r.id for r in recs]
+    seqs = [str(r.seq) for r in recs]
+    return ids, seqs
+
+def ensure_dir(p: Path):
+    p.mkdir(parents=True, exist_ok=True)
+
+def save_submission(df: pd.DataFrame, out_path: Path):
+    # CAFA sample format usually: 
+    # "The Protein ID", "The Gene Ontology term (GO) ID", "Predicted link probability that GO appear in Protein"
+    df.to_csv(out_path, sep="\t", index=False)
+    print("Wrote submission:", out_path, "rows:", len(df))
+```
+
+```python
+# =========================
+# 3) (OPTIONAL) BUILD ESM-2 EMBEDDINGS
+# =========================
+def build_esm2_embeddings(ids, seqs, out_dir: Path, batch_size=8):
+    """
+    Writes one .npy file per protein ID with shape [1280] for ESM2_t33_650M_UR50D mean pooled vectors.
+    """
+    ensure_dir(out_dir)
+    from esm import pretrained
+    import torch, numpy as np
+
+    model, alphabet = pretrained.esm2_t33_650M_UR50D()
+    batch_converter = alphabet.get_batch_converter()
+    model.eval()
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    model = model.to(device)
+
+    for start in tqdm(range(0, len(ids), batch_size), desc="ESM2 embedding"):
+        batch = list(zip(ids[start:start+batch_size], seqs[start:start+batch_size]))
+        labels, strs, toks = batch_converter(batch)
+        toks = toks.to(device)
+        with torch.no_grad():
+            out = model(toks, repr_layers=[33], return_contacts=False)
+        reps = out["representations"][33]             # [B, L, 1280]
+        means = reps.mean(dim=1).detach().cpu().numpy().astype("float32")  # [B, 1280]
+        for i, pid in enumerate(ids[start:start+batch_size]):
+            np.save(out_dir / f"{pid}.npy", means[i])
+
+def load_embedding(pid: str, search_dirs):
+    for d in search_dirs:
+        p = Path(d) / f"{pid}.npy"
+        if p.exists():
+            return np.load(p)
+    return None
+```
+
+```python
+# =========================
+# 4) LOAD DATA (TRAIN / TARGETS)
+# =========================
+assert SAMPLE_SUB.exists(), "sample_submission.tsv not found; check COMP_DIR"
+sample_sub = pd.read_csv(SAMPLE_SUB, sep="\t")
+print(sample_sub.head())
+
+# Identify target proteins from sample_submission (robust if test.fasta name varies)
+target_ids = sample_sub.iloc[:,0].unique().tolist()
+print("Unique target proteins in sample_submission:", len(target_ids))
+
+# Try reading explicit FASTA for targets if present (useful for embedding build)
+targets_fasta = None
+for cand in [TARGET_FASTA, COMP_DIR / "targets.fasta", COMP_DIR / "test_sequences.fasta"]:
+    if cand.exists():
+        targets_fasta = cand
+        break
+print("Targets FASTA:", targets_fasta)
+
+if targets_fasta is not None:
+    t_ids, t_seqs = read_fasta_ids_and_seqs(targets_fasta)
+    # Keep only those that appear in sample_submission, to stay consistent
+    keep = set(target_ids)
+    filt_pairs = [(i,s) for i,s in zip(t_ids, t_seqs) if i in keep]
+    t_ids, t_seqs = [p[0] for p in filt_pairs], [p[1] for p in filt_pairs]
+else:
+    # If FASTA not provided for targets, we can still produce a submission via a baseline
+    t_ids, t_seqs = target_ids, None
+print("Targets available:", len(t_ids))
+```
+
+```python
+# =========================
+# 5) GENERATE OR LOAD EMBEDDINGS
+# =========================
+search_dirs = []
+if USE_PRECOMPUTED_EMBEDS and PRECOMP_EMB_DIR.exists():
+    search_dirs.append(PRECOMP_EMB_DIR)
+if BUILD_ESM2_EMBEDS:
+    assert INTERNET_ENABLED, "Set INTERNET_ENABLED=True to install fair-esm"
+    assert targets_fasta is not None, "Need target FASTA to build embeddings"
+    build_esm2_embeddings(t_ids, t_seqs, EMB_DIR, batch_size=BATCH_SIZE)
+    search_dirs.append(EMB_DIR)
+
+print("Embedding search dirs:", [str(d) for d in search_dirs])
+
+# Quick probe: count how many embeddings we can load
+probe = sum(load_embedding(pid, search_dirs) is not None for pid in t_ids)
+print(f"Found embeddings for {probe}/{len(t_ids)} targets")
+```
+
+```python
+# =========================
+# 6) (OPTIONAL) TRAIN A TINY HEAD IF LABELS EXIST
+# =========================
+# If the competition provides training labels (protein_id, go_id), we could:
+#  1) build a multi-label binarized matrix for the ontology of interest
+#  2) average/fuse embeddings per protein id
+#  3) train a small MLP (concat features -> logits -> sigmoid)
+# For a self-contained skeleton, we implement a NO-OP if labels are missing.
+
+HAVE_LABELS = TRAIN_LABELS.exists()
+print("Have training labels:", HAVE_LABELS)
+
+trained_head = None
+label_encoder = None
+per_go_bias = {}
+
+if HAVE_LABELS:
+    # --- Minimal example sketch (namespace-agnostic). You will want to:
+    #  - choose an ontology subset (MFO/BPO/CCO)
+    #  - propagate parents in GO DAG
+    #  - compute per-term pos_weight
+    #  - split by clusters (MMseqs2)
+    import itertools, collections
+    lab = pd.read_csv(TRAIN_LABELS, sep="\t", header=None, names=["prot","go"])
+    # Build term index
+    terms = sorted(lab["go"].unique().tolist())
+    term2idx = {t:i for i,t in enumerate(terms)}
+    label_encoder = term2idx
+
+    # Load train FASTA + embeddings for those prots (if provided)
+    if TRAIN_FASTA.exists():
+        tr_ids, tr_seqs = read_fasta_ids_and_seqs(TRAIN_FASTA)
+        tr_ids = set(tr_ids)
+        lab = lab[lab["prot"].isin(tr_ids)].reset_index(drop=True)
+
+    X, Y = [], []
+    missing = 0
+    for pid, group in lab.groupby("prot"):
+        emb = load_embedding(pid, search_dirs)
+        if emb is None:
+            missing += 1
+            continue
+        y = np.zeros(len(terms), dtype=np.float32)
+        for go_id in group["go"].values:
+            y[term2idx[go_id]] = 1.0
+        X.append(emb); Y.append(y)
+    print(f"Train vectors: {len(X)}; missing embeddings: {missing}")
+    if len(X) > 10 and EMB_DIM == len(X[0]):
+        import torch, torch.nn as nn, torch.optim as optim
+        X = torch.tensor(np.stack(X), dtype=torch.float32)
+        Y = torch.tensor(np.stack(Y), dtype=torch.float32)
+
+        class MLP(nn.Module):
+            def __init__(self, d_in, d_out):
+                super().__init__()
+                self.net = nn.Sequential(
+                    nn.Linear(d_in, 1024), nn.ReLU(),
+                    nn.Linear(1024, 512), nn.ReLU(),
+                    nn.Linear(512, d_out)
+                )
+            def forward(self, x): return self.net(x)
+
+        model = MLP(EMB_DIM, len(terms))
+        device = "cuda" if torch.cuda.is_available() else "cpu"
+        model = model.to(device)
+        opt = optim.AdamW(model.parameters(), lr=1e-3, weight_decay=1e-4)
+        loss_fn = nn.BCEWithLogitsLoss()
+
+        # very small fit just to demonstrate
+        model.train()
+        for epoch in range(3):
+            bs = 256
+            perm = torch.randperm(X.size(0))
+            total = 0.0
+            for i in range(0, X.size(0), bs):
+                idx = perm[i:i+bs]
+                xb, yb = X[idx].to(device), Y[idx].to(device)
+                opt.zero_grad()
+                logits = model(xb)
+                loss = loss_fn(logits, yb)
+                loss.backward()
+                opt.step()
+                total += loss.item() * xb.size(0)
+            print(f"epoch {epoch+1} loss {total/X.size(0):.4f}")
+        trained_head = model.eval()
+    else:
+        print("Skipping head training (insufficient vectors or dim mismatch).")
+else:
+    print("No labels provided by competition package—using a safe fallback for submission.")
+```
+
+```python
+# =========================
+# 7) INFERENCE → SUBMISSION
+# =========================
+# Strategy:
+#  - If we have a trained head + term list: produce scores per GO term
+#  - Else: use sample_submission list of (protein, GO) and assign a simple baseline probability
+#           (or a heuristic from embedding norms if embeddings exist)
+
+BASELINE_P = 0.01  # conservative fallback
+
+if trained_head is not None and label_encoder is not None:
+    # Produce scores for all (protein, go) in sample_submission by:
+    #  1) computing/reading embedding for protein
+    #  2) forward through trained_head -> probs per known term
+    #  3) read sample_submission rows that refer to terms we have; copy probs
+    term_index = label_encoder
+    inv_term = {i:t for t,i in term_index.items()}
+    go_to_idx = term_index
+
+    # Precompute a per-protein prob vector (only once)
+    PROB_CACHE = {}
+    import torch
+    device = next(trained_head.parameters()).device
+    for pid in tqdm(sample_sub.iloc[:,0].unique(), desc="Infer proteins"):
+        emb = load_embedding(pid, search_dirs)
+        if emb is None:
+            PROB_CACHE[pid] = None
+            continue
+        with torch.no_grad():
+            x = torch.tensor(emb, dtype=torch.float32, device=device).unsqueeze(0)
+            logits = trained_head(x)
+            probs = torch.sigmoid(logits).squeeze(0).cpu().numpy()
+        PROB_CACHE[pid] = probs
+
+    preds = []
+    col_prot, col_go, col_prob = sample_sub.columns.tolist()
+    for _, row in sample_sub.iterrows():
+        pid, go_id = row[col_prot], row[col_go]
+        probs = PROB_CACHE.get(pid)
+        if probs is None or go_id not in go_to_idx:
+            preds.append(BASELINE_P)
+        else:
+            preds.append(float(probs[go_to_idx[go_id]]))
+    sub = sample_sub.copy()
+    sub[col_prob] = preds
+else:
+    # Fallback: uniform small probability (competitions often accept any [0,1])
+    # You can replace this with an embedding-based heuristic if you like
+    sub = sample_sub.copy()
+    prob_col = sub.columns[-1]
+    sub[prob_col] = BASELINE_P
+
+# Save
+save_submission(sub, WORK_DIR / "submission.tsv")
+```
+
+```python
+# =========================
+# 8) NEXT STEPS (print checklist)
+# =========================
+print("""
+NEXT STEPS:
+1) Turn INTERNET_ENABLED=True and BUILD_ESM2_EMBEDS=True once to generate ESM-2 embeddings.
+   - After it finishes, go to the Output tab and 'Create Dataset' named e.g. my-cafa6-embeddings.
+   - In future runs, set USE_PRECOMPUTED_EMBEDS=True and attach that dataset to skip embedding time.
+
+2) If the competition provides training labels (TRAIN_LABELS), the tiny head will train.
+   - For real scoring: add GO DAG parent propagation, class weighting, and better validation (cluster splits).
+
+3) Always verify column names of sample_submission. This notebook writes exactly the same columns.
+
+4) When ready, Save Version -> 'Save & Submit' or download submission.tsv and submit from the competition page.
+""")
+```
+
+---
+
+## How to use this skeleton
+
+1. **First (embedding build) run**
+
+   * Notebook Settings: **GPU = On**, **Internet = On**
+   * Set at top:
+
+     * `INTERNET_ENABLED=True`
+     * `BUILD_ESM2_EMBEDS=True`
+     * `USE_PRECOMPUTED_EMBEDS=False` (for this run)
+   * Run all cells. When done, go to **Output** → **Create Dataset** (e.g., `my-cafa6-embeddings`).
+
+2. **Subsequent (fast) runs**
+
+   * Notebook Settings: **Internet = Off**
+   * Add your **embeddings Dataset** as an **Input** (adjust `PRECOMP_EMB_DIR`).
+   * Set:
+
+     * `INTERNET_ENABLED=False`
+     * `BUILD_ESM2_EMBEDS=False`
+     * `USE_PRECOMPUTED_EMBEDS=True`
+   * Run all cells; you’ll get `submission.tsv` quickly.
+
+3. **Training a real model**
+
+   * Replace the toy head with a proper multi-label model (add **GO parent propagation**, **pos_weight** per term, **cluster-aware splits**, and **threshold calibration**).
+   * If you have **ProtT5 / ANKH** embeddings, load and `np.concatenate` them with ESM-2 for a stronger encoder.
+
+If you want, I can also give you a **second notebook** whose only job is “**produce embeddings**” (cleaner separation), and a **training notebook** that assumes embeddings are present.

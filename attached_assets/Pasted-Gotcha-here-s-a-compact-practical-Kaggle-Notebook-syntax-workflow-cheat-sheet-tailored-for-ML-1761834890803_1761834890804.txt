@@ -1,0 +1,224 @@
+Gotcha—here’s a compact, practical **Kaggle Notebook syntax + workflow cheat-sheet** tailored for ML/competitions like CAFA-6.
+
+# 1) Paths & filesystem
+
+* **Read-only inputs**: `/kaggle/input/<dataset-or-competition-name>/...`
+* **Your writable scratch**: `/kaggle/working/` (temp during a run)
+* **Output artifacts** (persist when you “Save Version”): anything you leave in `/kaggle/working/` becomes available as notebook **Output** files.
+
+```python
+import pandas as pd, os, numpy as np
+
+# Examples:
+train = pd.read_csv("/kaggle/input/cafa-6-protein-function-prediction/train.csv")
+fasta_path = "/kaggle/input/cafa-6-protein-function-prediction/train.fasta"
+
+# Write artifacts (models, embeddings, submission):
+os.makedirs("/kaggle/working/embeddings", exist_ok=True)
+np.save("/kaggle/working/embeddings/A0A0C5B5G6.npy", np.random.randn(1280).astype("float32"))
+```
+
+# 2) Python, shell, and “cell magics”
+
+* **Python cells** are default.
+* **Shell**: prefix with `!` for single lines, or use `%%bash` for multi-line.
+* **Magics**: `%pip`, `%conda`, `%time`, `%env`, `%%time`, `%%writefile`, etc.
+
+```python
+# Install packages (prefer %pip over !pip so the same environment is used)
+%pip install -q fair-esm  # if internet enabled; else use wheel datasets (see §5)
+
+# One-liner shell
+!nvidia-smi
+
+# Multi-line shell
+%%bash
+ls -lah /kaggle/input
+echo "Building indices..."
+
+# Write a small helper script from a cell
+%%writefile /kaggle/working/utils.py
+import numpy as np
+def fuse_vecs(a, b): return np.concatenate([a, b], axis=0)
+```
+
+# 3) Markdown syntax (headings, code, math)
+
+Use regular Markdown; fenced code blocks; LaTeX via `$ ... $` inline or `$$ ... $$` display.
+
+````markdown
+# Title
+**Bold**, _italic_, `inline code`
+
+```python
+# fenced code block
+print("hello")
+````
+
+Inline math: $p(y|x)$
+Block math:
+$$
+\text{IC}(t) = -\log \Pr(t)
+$$
+
+````
+
+> Tip: GitHub sometimes requires extra LaTeX helpers; Kaggle renders most LaTeX fine in Markdown cells.
+
+# 4) Data I/O patterns you’ll constantly use
+```python
+import pandas as pd
+
+sub = pd.DataFrame({
+    "The Protein ID": ["A0A0C5B5G6", "A0A1B0GTW7"],
+    "The Gene Ontology term (GO) ID": ["GO:0000001","GO:0000002"],
+    "Predicted link probability that GO appear in Protein": [0.123, 0.456],
+})
+sub.to_csv("/kaggle/working/submission.tsv", sep="\t", index=False)
+````
+
+# 5) Installing packages (with & without internet)
+
+* **With internet enabled (Notebook setting)**: use `%pip install ...`.
+* **Without internet** (typical for competition submissions):
+
+  1. Create a private **Dataset** that contains your prebuilt wheels/tarballs.
+  2. Add that Dataset as an **Input** to the notebook.
+  3. Install from local files:
+
+```python
+# offline install from attached wheel dataset
+!ls /kaggle/input/my-wheels
+%pip install -q /kaggle/input/my-wheels/fair_esm-2.0.0-py3-none-any.whl
+```
+
+# 6) GPUs/TPUs & device checks
+
+* Enable **GPU/TPU** in Notebook → **Settings** → Accelerator.
+* Check device in code:
+
+```python
+import torch, platform
+print("Python", platform.python_version())
+print("CUDA:", torch.cuda.is_available())
+if torch.cuda.is_available():
+    print("GPU:", torch.cuda.get_device_name(0))
+```
+
+# 7) Reproducibility
+
+```python
+import random, os, numpy as np, torch
+def seed_all(s=1337):
+    random.seed(s); np.random.seed(s)
+    torch.manual_seed(s); torch.cuda.manual_seed_all(s)
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = False
+seed_all(42)
+```
+
+# 8) Speed helpers
+
+* **Timing**:
+
+```python
+%%time
+# cell wall-clock timing
+
+%timeit np.random.randn(1000).sum()  # quick micro-bench
+```
+
+* **Progress bars**:
+
+```python
+from tqdm.auto import tqdm
+for x in tqdm(range(10_000)): pass
+```
+
+# 9) Persisting models/embeddings for later versions
+
+Anything you leave under `/kaggle/working/` at the end of a run shows up as **Output**. You can then “Create Dataset” from that Output to reuse artifacts offline later.
+
+```python
+import joblib, os
+os.makedirs("/kaggle/working/models", exist_ok=True)
+joblib.dump({"weights": np.random.randn(3072, 2)}, "/kaggle/working/models/head.pkl")
+```
+
+# 10) Submitting to competitions
+
+* Write your submission file (correct name/format).
+* Click **Save Version** → choose **Save & Submit** (for competition notebooks) or attach the produced file when submitting through the competition page.
+
+```python
+# Example: TSV with no index, exact columns in correct order
+sub.to_csv("/kaggle/working/submission.tsv", sep="\t", index=False)
+```
+
+# 11) Common CAFA-6 patterns (quick plugs into the above)
+
+* **Load FASTA** and map IDs:
+
+```python
+from Bio import SeqIO
+records = list(SeqIO.parse("/kaggle/input/cafa-6-protein-function-prediction/train.fasta", "fasta"))
+ids = [r.id for r in records]
+seqs = [str(r.seq) for r in records]
+```
+
+* **Generate ESM-2 embeddings** (if internet enabled and fair-esm allowed):
+
+```python
+%pip install -q fair-esm
+from esm import pretrained
+import torch, numpy as np, os
+model, alphabet = pretrained.esm2_t33_650M_UR50D()
+batch_converter = alphabet.get_batch_converter()
+model.eval()
+
+os.makedirs("/kaggle/working/esm2_npy", exist_ok=True)
+batch = list(zip(ids, seqs))
+for i in range(0, len(batch), 8):
+    labels, strs, toks = batch_converter(batch[i:i+8])
+    with torch.no_grad():
+        out = model(toks, repr_layers=[33], return_contacts=False)
+    reps = out["representations"][33]            # [B, L, 1280]
+    means = reps.mean(dim=1).cpu().numpy()       # [B, 1280]
+    for j, pid in enumerate(ids[i:i+8]):
+        np.save(f"/kaggle/working/esm2_npy/{pid}.npy", means[j].astype("float32"))
+```
+
+* **Fuse with other pLMs**: read `*.npy` by ProteinID and `np.concatenate`.
+
+# 12) Notebook settings you’ll toggle a lot
+
+* **Accelerator**: None / GPU / TPU
+* **Internet**: On for exploration, Off for final competition submissions (depends on rules)
+* **CPU/GPU Memory**: Keep an eye on RAM (shown in the right sidebar). Chunk large operations.
+
+# 13) Debugging path issues
+
+* Confirm exact folder names (Kaggle normalizes dataset slugs):
+
+```python
+!find /kaggle/input -maxdepth 2 -type f | head -n 40
+```
+
+# 14) Versioning + “Re-using” outputs
+
+* After a run, go to **Output** tab → “Create Dataset” to turn embeddings/checkpoints into a reusable offline dataset.
+* In a new notebook, add that dataset as an **Input**, and you can:
+
+```python
+!ls /kaggle/input/my-cafa6-embeddings/esm2_npy | head
+```
+
+---
+
+If you want, I can drop a **starter Kaggle notebook skeleton** for CAFA-6 that:
+
+* mounts inputs,
+* generates (or loads) ESM-2 embeddings,
+* trains a tiny head,
+* writes `submission.tsv`,
+* and saves artifacts cleanly to `/kaggle/working/`.
