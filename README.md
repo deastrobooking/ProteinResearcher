@@ -453,3 +453,119 @@ This implementation is provided for research and educational purposes.
 ## Documentation
 
 For detailed technical architecture and development notes, see `replit.md`.
+
+Here’s a clean, copy-pasteable “Intro to the Topics” section for your README.
+
+---
+
+# Intro to the Topics
+
+This project tackles **protein function prediction** for the CAFA-6 challenge by combining sequence-based deep learning, classical homology transfer, and zero-shot reasoning over Gene Ontology (GO) terms. If you’re new to CAFA or just need a refresher on the moving parts, this section orients you to the core ideas the system builds on.
+
+## CAFA-6 at a Glance
+
+**CAFA (Critical Assessment of Functional Annotation)** is a blind challenge that scores predicted GO annotations for target proteins. Submissions must:
+
+* Predict terms across three ontologies: **MFO** (molecular function), **BPO** (biological process), **CCO** (cellular component).
+* Follow format and **compliance rules** (≤1500 terms/protein, numeric precision, etc.).
+* Compete on metrics such as **IC-weighted maxF1**.
+
+## Gene Ontology (GO)
+
+GO is a directed acyclic graph (DAG) of biological concepts:
+
+* **Nodes** are GO terms; **edges** encode parent–child (“is-a”/“part-of”) relations.
+* Predictions should be **ontology-consistent** (a child’s score should not exceed its ancestors after post-processing).
+* We use **ancestor closure** to propagate predictions up the DAG for consistent, complete annotations.
+
+## Protein Language Models (pLMs)
+
+Large models trained on protein sequences (e.g., **ESM-2**, **ProtT5**, **Ankh**) produce vector embeddings that capture biochemical and evolutionary regularities:
+
+* Typical dims: ESM-2 (1280), ProtT5 (1024), Ankh (768).
+* Embeddings serve as features for neural heads that score GO terms.
+
+## Homology Search (DIAMOND)
+
+**Homology transfer** is a strong, complementary signal:
+
+* **DIAMOND** rapidly finds similar sequences; matched proteins contribute their known GO terms.
+* We encode homology evidence as compact features and fuse with pLM embeddings for better recall and robustness.
+
+## Zero-Shot GO Term Encoding
+
+Some GO terms are poorly represented in training labels. We mitigate this with **text embeddings** of GO term definitions (e.g., sentence transformers):
+
+* Compute a vector for each term’s text.
+* Match proteins ↔ terms via similarity (**zero-shot**).
+* Run in **pure**, **hybrid**, or **off** modes depending on data and runtime needs.
+
+## Multi-pLM Ensembles & Fusion
+
+Different pLMs learn complementary signals. We support multiple fusion strategies:
+
+* **Concat** (simple and strong baseline), **weighted average**, **attention-based**, **gated** fusion.
+* Ensemble + homology yields a rich feature space with strong downstream performance.
+
+## Information Accretion (IA) Weights
+
+**IA weights** reflect the information content of terms for evaluation and loss shaping:
+
+* Higher IA → rarer/more informative terms.
+* We use IA to weight metrics and can incorporate it in training or calibration.
+
+## Hierarchical Consistency & Ancestor Closure
+
+To respect the GO DAG:
+
+* A **hierarchical consistency loss** penalizes violations where a child exceeds its parent.
+* **Ancestor closure** post-processing ensures every predicted child implies its ancestors, improving biological plausibility and CAFA scoring compliance.
+
+## Metrics, Thresholds, and Top-K
+
+* **IC-weighted maxF1**: F1 computed with term-specific weights.
+* **Per-ontology thresholding**: We grid-search MFO/BPO/CCO thresholds separately.
+* **Top-K filtering**: Hard cap of ≤1500 terms/protein to meet CAFA-6 rules (with tunable default).
+
+## Caching, Checkpoints, and Reproducibility
+
+* Aggressive **caching** avoids recomputation (GO graphs, DIAMOND DBs, embeddings).
+* **Checkpoints** save best-performing models for reproducible submissions and ablations.
+* Clear **configs** (paths, toggles, fusion, losses) make experiments deterministic and auditable.
+
+## Compliance & Submission
+
+* The **submission writer** formats predictions to CAFA-6 spec (IDs, sig figs, ontology separation).
+* Validation includes **format checks**, **ancestor closure**, **Top-K**, and **thresholding** before export.
+
+## How the Pieces Fit (Pipeline)
+
+```
+FASTA ──▶ pLM Embeddings ─┐
+                          │
+                   DIAMOND Homology ─▶ Feature Fusion (concat/attn/gated)
+                          │
+           GO Term Text Embeddings (zero-shot, optional) ──┘
+                                   │
+                         Multi-Head Scoring (MFO/BPO/CCO)
+                                   │
+         Hierarchical Loss (train) & Ancestor Closure (post-proc)
+                                   │
+           Per-Ontology Thresholding + Top-K (≤1500 terms/protein)
+                                   │
+                         CAFA-6 Submission File(s)
+```
+
+## Quick Glossary
+
+* **GO**: Gene Ontology (MFO/BPO/CCO categories).
+* **IA**: Information Accretion (term informativeness).
+* **pLM**: Protein Language Model (ESM-2, ProtT5, Ankh).
+* **Zero-shot**: Scoring via protein ↔ term text similarity without term-specific training labels.
+* **Ancestor closure**: Add all ancestors of predicted terms to maintain ontology consistency.
+* **IC-weighted maxF1**: F1 metric weighted by term informativeness.
+* **Top-K**: Enforce CAFA’s ≤1500 terms/protein rule.
+
+---
+
+> Tip: Start with **single-pLM + no-homology** for a fast baseline, then add **homology** and **zero-shot**, and finally move to **ensemble + hierarchical loss** for leaderboard-level performance.
