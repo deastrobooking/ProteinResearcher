@@ -97,14 +97,59 @@ Tested on real CAFA-6 test data:
 
 ### Dependencies
 
-All dependencies are pre-installed in this environment:
-- `torch`, `torchmetrics` - Deep learning
-- `obonet`, `networkx` - GO graph processing
-- `numpy`, `pandas` - Data manipulation
-- `biopython` - Sequence I/O
-- `scikit-learn` - Utilities
+#### Core Dependencies
+Install all required Python packages:
+
+```bash
+pip install torch torchmetrics obonet networkx numpy pandas biopython scikit-learn tqdm transformers sentence-transformers
+```
+
+**Individual packages:**
+- `torch` (≥2.0) - PyTorch deep learning framework
+- `torchmetrics` - PyTorch metric computations
+- `obonet` - GO ontology OBO file parsing
+- `networkx` - Graph operations for GO hierarchy
+- `numpy` - Numerical computations
+- `pandas` - Data manipulation
+- `biopython` - Biological sequence I/O (FASTA parsing)
+- `scikit-learn` - Machine learning utilities
 - `tqdm` - Progress bars
-- `transformers`, `sentence-transformers` - Zero-shot encoding
+- `transformers` - Hugging Face transformer models (ESM-2, ProtT5, Ankh)
+- `sentence-transformers` - Sentence embedding models for zero-shot learning
+
+#### Optional Dependencies
+- `lightning-utilities` - Automatically installed with torchmetrics
+- `huggingface-hub` - Model downloading (auto-installed with transformers)
+- `safetensors` - Safe tensor serialization (auto-installed with transformers)
+- `regex` - Regular expressions (auto-installed with transformers)
+
+#### For Kaggle Notebooks
+**Python notebook:**
+```bash
+# Usually pre-installed on Kaggle, but add if needed:
+pip install torch transformers sentence-transformers biopython tqdm numpy pandas
+```
+
+**R notebook:**
+```r
+# Usually pre-installed on Kaggle:
+install.packages(c('ggplot2', 'readr'))
+```
+
+#### Development Environment Setup
+For a complete fresh environment:
+
+```bash
+# Create virtual environment
+python -m venv cafa6_env
+source cafa6_env/bin/activate  # On Windows: cafa6_env\Scripts\activate
+
+# Install all dependencies
+pip install torch torchmetrics obonet networkx numpy pandas biopython scikit-learn tqdm transformers sentence-transformers
+
+# Verify installation
+python -c "from cafa6_predictor.config.base import Config; print('✓ Installation successful')"
+```
 
 ## Usage
 
@@ -348,6 +393,22 @@ Applying Top-K filtering (max 1500 terms per protein)...
 - `cafa6_predictor/checkpoints/best_model.pt` - Trained model
 - `cafa6_predictor/cache/` - Cached intermediate results
 - Submission file (via SubmissionWriter API)
+
+## Kaggle Notebooks
+
+Two lightweight Kaggle-ready notebooks are included for an interactive workflow that uses both Python and R:
+
+- `notebook_python.ipynb` — Python kernel. Runs a small demo (uses `--demo --use-testdata`) to produce example embeddings in `cafa6_predictor/data/testdata/`, validates them, and exports CSV artifacts (`*_embeddings_head.csv` and `artifacts_summary.csv`) that are safe for downstream analysis.
+- `notebook_r.ipynb` — R kernel. Reads the CSV artifacts exported by the Python notebook and runs quick visualizations (PCA) using `ggplot2`. It expects the Python notebook to have already produced the CSVs in `cafa6_predictor/data/testdata/`.
+
+How to use on Kaggle:
+
+1. Upload the repository to a new Kaggle notebook. Select the **Python** kernel and run `notebook_python.ipynb` first. It will run the demo pipeline and write CSVs into `cafa6_predictor/data/testdata/`.
+2. Switch the kernel to **R** (or open a new R notebook) and run `notebook_r.ipynb` to load the CSVs and visualize embedding previews.
+
+Notes:
+- The Python notebook runs the project's Python scripts (calls `cafa6_predictor/main.py --demo --use-testdata --no-homology`) — in Kaggle you can remove the `--no-homology` flag if you upload the real DIAMOND database and have the required binaries.
+- The notebooks are intentionally minimal: the Python notebook exports compact CSV previews so the R notebook doesn't need extra Python/R bridging packages. If you prefer direct interop, modify the R notebook to use `reticulate` or `RcppCNPy` to import `.npy` files directly.
 
 ## Performance Characteristics
 
