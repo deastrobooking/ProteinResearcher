@@ -1,0 +1,82 @@
+Short answer: **Yes—precompute embeddings.** That’s what most strong CAFA-6 notebooks are doing, and it keeps training fast and reproducible. You can generate ESM-2 (and optionally ProtT5/ANKH) vectors from the FASTA once, save them as `.npy` keyed by ProteinID, and your pipeline will “just work.” Kaggle examples show exactly this pattern (ESM-2 extraction notebooks and end-to-end CAFA-6 baselines). ([GitHub][1])
+
+Here’s a crisp plan with copy-pasteable snippets.
+
+# Option A (recommended): Precompute ESM-2 embeddings from FASTA
+
+1. **Install & extract in bulk (Meta’s `esm-extract`)**
+
+```bash
+pip install fair-esm
+# One-shot: write per-seq embeddings (33rd layer) for the whole FASTA
+python -m esm.extract esm2_t33_650M_UR50D \
+  data/ca6/fasta/all_sequences.fasta \
+  data/ca6/emb/esm2 \
+  --repr_layers 33 --include mean
+```
+
+This writes one file per sequence (or a single `.pt`) that you can convert to `.npy`. The official repo documents batch extraction from FASTA. ([GitHub][1])
+
+2. **Save one `.npy` per ProteinID**
+
+```python
+# convert_pt_to_npy.py
+import torch, numpy as np, os
+pt = torch.load("data/ca6/emb/esm2/esm2_t33_650M_UR50D-all_sequences.fasta.pt")
+os.makedirs("data/ca6/emb/esm2_npy", exist_ok=True)
+for pid, rep in pt.items():
+    # 'mean_representations'[33] is a 1280-d vector for ESM2_t33_650M
+    vec = rep["mean_representations"][33].numpy().astype("float32")
+    np.save(f"data/ca6/emb/esm2_npy/{pid}.npy", vec)
+```
+
+3. **(Optional) Add ProtT5 / ANKH and fuse**
+   Kaggle/HF references show simple mean-pooling from their encoders; you can concat vectors. ([Kaggle][2])
+
+4. **Point your training code to `emb_dir`** so it loads `*.npy` that match the FASTA ProteinIDs.
+
+Why this is best:
+
+* Matches how high-scoring Kaggle baselines operate (fast, reproducible). ([Kaggle][3])
+* You can cache/share the embedding folder between runs and CI.
+
+# Option B: Work directly from FASTA (no precompute)
+
+Embed on-the-fly with HF inside your training/eval loop—simple but **slow** and may hit Kaggle GPU limits/timeouts. Great for quick prototyping; not ideal for full training. (See ESM-2/ProtT5 extraction tutorials for code patterns.) ([Kaggle][4])
+
+Minimal HF snippet you can drop into your dataloader (uses mean-pool of last hidden):
+
+```python
+from transformers import AutoTokenizer, AutoModel
+import torch, numpy as np
+
+tok = AutoTokenizer.from_pretrained("facebook/esm2_t33_650M_UR50D")
+mdl = AutoModel.from_pretrained("facebook/esm2_t33_650M_UR50D").eval()
+
+@torch.no_grad()
+def embed_seq(seq: str) -> np.ndarray:
+    toks = tok(seq, return_tensors="pt", add_special_tokens=True, truncation=True)
+    out = mdl(**toks).last_hidden_state.mean(dim=1).squeeze(0)
+    return out.cpu().numpy().astype("float32")
+```
+
+But again—expect long wall-clock times.
+
+# Option C: Use precomputed community embeddings (if available)
+
+Sometimes competitors publish ESM-2 embeddings as a Kaggle Dataset/Notebook attachment specifically for CAFA-6, but availability changes. There are notebooks that *generate* embeddings for CAFA-6; if someone turns those into a Dataset you can mount it to skip compute. Search on Kaggle Datasets/Notebooks for “CAFA6 ESM2 embeddings” and similar; we found multiple fresh *notebooks* doing this (good copy-sources), but Datasets come and go. ([Kaggle][3])
+
+---
+
+## What I recommend for you
+
+* **Do Option A** now (ESM-2). It’s the best balance of speed and control.
+* If you have time/GPU, add **ProtT5** and/or **ANKH** and **concat** (stronger ensemble). ([Kaggle][2])
+* Keep the files as `data/ca6/emb/{esm2,prott5,ankh}_npy/ProteinID.npy`. Your trainer can `np.load` by ID and `np.concatenate`.
+
+If you want, paste your folder layout and I’ll drop in a tiny “embeddings builder” CLI (one command builds ESM-2 → `.npy`, optional ProtT5/ANKH, then writes a manifest that your datamodule can consume).
+
+[1]: https://github.com/facebookresearch/esm?utm_source=chatgpt.com "facebookresearch/esm: Evolutionary Scale Modeling (esm)"
+[2]: https://www.kaggle.com/code/tilii7/prott5-xl-embedding?utm_source=chatgpt.com "ProtT5 XL embedding"
+[3]: https://www.kaggle.com/code/abdullah0a/esm2-embeddings-cafa6?utm_source=chatgpt.com "ESM2 Embeddings-CAFA6"
+[4]: https://www.kaggle.com/code/viktorfairuschin/extracting-esm-2-embeddings-from-fasta-files?utm_source=chatgpt.com "Extracting ESM-2 Embeddings from FASTA files"
