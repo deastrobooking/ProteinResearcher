@@ -1,5 +1,13 @@
 # CAFA-6 Protein Function Prediction System
 
+https://biofunctionprediction.org/
+https://www.iscb.org/ismbeccb2023
+https://www.uniprot.org/uniprotkb/P04637/entry
+https://github.com/claradepaolis/CAFA-evaluator-PK
+https://genomebiology.biomedcentral.com/articles/10.1186/s13059-016-1037-6
+https://friedberglab.net/
+
+
 A competitive CAFA-6 compliant implementation for protein function prediction using a hybrid approach combining protein language models, homology search, zero-shot learning, and advanced optimization techniques.
 
 ## Overview
