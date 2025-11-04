@@ -1,0 +1,15 @@
+{
+  "algorithm": "knn",
+  "mode": "demo",
+  "total_predictions": 71,
+  "unique_proteins": 10,
+  "unique_terms": 10,
+  "avg_terms_per_protein": 7.1,
+  "performance_metrics": {
+    "GO terms loaded": {
+      "value": 10,
+      "timestamp": 0.00014019012451171875
+    }
+  },
+  "timestamp": 1762218424.0557687
+}
